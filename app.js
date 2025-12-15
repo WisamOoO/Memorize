@@ -26,6 +26,17 @@ function parseDateKey(dateKey){
   const [y,m,d] = dateKey.split("-").map(Number);
   return new Date(y, m-1, d);
 }
+function dateKeyFromDate(d){
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,"0");
+  const da = String(d.getDate()).padStart(2,"0");
+  return `${y}-${m}-${da}`;
+}
+function addDaysToKey(dateKey, n){
+  const d = parseDateKey(dateKey);
+  d.setDate(d.getDate() + n);
+  return dateKeyFromDate(d);
+}
 function daysBetween(aKey, bKey){
   const a = parseDateKey(aKey);
   const b = parseDateKey(bKey);
@@ -52,7 +63,6 @@ function defaultState() {
       lastAttendanceDateKey: null,
       streak: 0,
       lastActivity: "لا يوجد.",
-      // إضافة اليوم: قفل الخروج قبل 4 بطاقات
       addLockDateKey: null
     },
     wallet: {
@@ -123,8 +133,6 @@ const MIN_DAILY_FIRST = 4;
 
 /* ---------- Account Level (XP -> Level) ---------- */
 function accountLevelFromXP(xp){
-  // منحنى غير حاد: المستوى يرتفع تدريجيًا
-  // Lv1 عند 0 XP
   const lvl = Math.floor(Math.sqrt(Math.max(0, xp) / 500)) + 1;
   const curMinXP = (Math.max(0, (lvl-1)) ** 2) * 500;
   const nextMinXP = (lvl ** 2) * 500;
@@ -208,6 +216,7 @@ function safeTodayKey(state) {
     return real;
   }
   if (real < state.meta.lastSeenDateKey) {
+    // منع الرجوع بالوقت
     return state.meta.lastSeenDateKey;
   }
   state.meta.lastSeenDateKey = real;
@@ -267,24 +276,6 @@ function dueGroupsToday() {
   return Array.from(due).map(k => STATE.groups[k]).filter(Boolean);
 }
 
-/* ---------- Card daily progression (attendance-driven) ---------- */
-function bumpCardLevelsForNewDay(prevDayKey, todayKey){
-  // فقط إذا كان الأمس فيه حضور
-  if (STATE.meta.lastAttendanceDateKey !== prevDayKey) return;
-
-  Object.values(STATE.cards).forEach(c => {
-    if (!c) return;
-
-    // ترقية حتى 6 فقط
-    if (c.level < 6) c.level += 1;
-
-    // مستوى 7 بعد 30 يوم من الإضافة (حسب التاريخ)
-    const addKey = c.addDateKey || prevDayKey;
-    const age = daysBetween(addKey, todayKey);
-    if (age >= 30) c.level = 7;
-  });
-}
-
 /* ---------- Add lock (no exit before 4) ---------- */
 function addLockActiveToday(){
   const today = getTodayGroupKey();
@@ -296,7 +287,6 @@ function setAddLockIfNeeded(){
     STATE.meta.addLockDateKey = null;
     return;
   }
-  // إذا بدأ يكتب أو حفظ أي شيء: قفل اليوم
   STATE.meta.addLockDateKey = today;
 }
 function clearAddInputs(){
@@ -305,53 +295,104 @@ function clearAddInputs(){
   $("#inHint").value = "";
 }
 
-/* ---------- Ensure day rollover (refund + streak + fuel + level bumps) ---------- */
+/* =========================================================
+   ✅ FIX: Daily rollover + Levels advance with days
+   Rule: levels ALWAYS advance each day,
+   BUT if a card is on a "due level" (1/3/6/7) and the user
+   had NO attendance that day, the level FREEZES across midnight.
+   Also: app watches midnight even if kept open.
+   ========================================================= */
+
+function updateCardLevelsAtRollover(dayKey, nextKey){
+  Object.values(STATE.cards).forEach(c => {
+    if (!c) return;
+
+    // المستوى 7 نهائي
+    if (c.level === 7) return;
+
+    // إذا صار عمر البطاقة >=30 يوم عند بداية اليوم الجديد => 7
+    const addKey = c.addDateKey || dayKey;
+    const ageNext = daysBetween(addKey, nextKey);
+    if (ageNext >= 30) {
+      c.level = 7;
+      return;
+    }
+
+    // قاعدة التجميد: إذا اليوم كان لازم تظهر البطاقة (مستوى due)
+    // والمستخدم ما سجل حضور بهذا اليوم => لا تتقدم بالميدنايت
+    const noAttendanceThatDay = (STATE.meta.lastAttendanceDateKey !== dayKey);
+    if (DUE_LEVELS.has(c.level) && noAttendanceThatDay) {
+      return; // freeze
+    }
+
+    // التقدم الطبيعي 0->1->2->3->4->5->6 ثم توقف
+    if (c.level < 6) c.level += 1;
+  });
+}
+
+function applyEndOfDay(dayKey, nextKey){
+  // streak / fuel
+  if (STATE.meta.lastAttendanceDateKey !== dayKey) {
+    if ((STATE.inventory.fuel || 0) > 0) {
+      STATE.inventory.fuel -= 1;
+      STATE.meta.lastActivity = "تم استخدام 1 وقود لحماية الحماسة من الانطفاء.";
+      AudioFX.beep("coin");
+    } else {
+      STATE.meta.streak = 0;
+    }
+  }
+
+  // levels update
+  updateCardLevelsAtRollover(dayKey, nextKey);
+
+  // refund unused extra cards of that day
+  const unused = Math.max(0, (STATE.inventory.extraCardsBought||0) - (STATE.inventory.extraCardsUsed||0));
+  if (unused > 0) {
+    const refund = Math.floor(unused * 100 * 0.5);
+    STATE.wallet.gold += refund;
+    STATE.meta.lastActivity = `تمت إعادة ${refund} ذهب (50% من بطاقات إضافية غير مستخدمة).`;
+    AudioFX.beep("coin");
+  }
+
+  // reset daily-only counters for next day
+  STATE.inventory.extraCardsBought = 0;
+  STATE.inventory.extraCardsUsed = 0;
+  STATE.meta.addLockDateKey = null;
+
+  // move inventory day
+  STATE.inventory.dateKey = nextKey;
+}
+
 function ensureDayRollover() {
   const today = safeTodayKey(STATE);
-  const prev = STATE.inventory.dateKey;
 
-  if (today !== prev) {
-    // حماية الحماسة: إذا الأمس ما فيه حضور، استهلك وقود أو صفّر
-    if (STATE.meta.lastAttendanceDateKey !== prev) {
-      if ((STATE.inventory.fuel || 0) > 0) {
-        STATE.inventory.fuel -= 1;
-        STATE.meta.lastActivity = "تم استخدام 1 وقود لحماية الحماسة من الانطفاء.";
-        AudioFX.beep("coin");
-      } else {
-        STATE.meta.streak = 0;
-      }
-    }
-
-    // ترقية مستويات البطاقات (فقط إذا كان الأمس حضور)
-    bumpCardLevelsForNewDay(prev, today);
-
-    // ترقية تلقائية لمستوى 7 إذا تعدى 30 يوم (حتى لو ما صار bump)
-    Object.values(STATE.cards).forEach(c => {
-      const addKey = c?.addDateKey;
-      if (!addKey) return;
-      const age = daysBetween(addKey, today);
-      if (age >= 30) c.level = 7;
-    });
-
-    // refund 50% for unused extra cards
-    const unused = Math.max(0, STATE.inventory.extraCardsBought - STATE.inventory.extraCardsUsed);
-    if (unused > 0) {
-      const refund = Math.floor(unused * 100 * 0.5);
-      STATE.wallet.gold += refund;
-      STATE.meta.lastActivity = `تمت إعادة ${refund} ذهب (50% من بطاقات إضافية غير مستخدمة).`;
-      AudioFX.beep("coin");
-    }
-
-    // reset daily-only counters
+  if (!STATE.inventory.dateKey) {
     STATE.inventory.dateKey = today;
-    STATE.inventory.extraCardsBought = 0;
-    STATE.inventory.extraCardsUsed = 0;
+    saveState(STATE);
+    return;
+  }
 
-    // قفل الإضافة لا ينتقل لليوم التالي
-    STATE.meta.addLockDateKey = null;
+  // لو مرّ أكثر من يوم، طبّق rollover يوم بيوم
+  while (STATE.inventory.dateKey !== today) {
+    const dayKey = STATE.inventory.dateKey;
+    const nextKey = addDaysToKey(dayKey, 1);
+    applyEndOfDay(dayKey, nextKey);
   }
 
   saveState(STATE);
+}
+
+function startMidnightWatcher(){
+  setInterval(() => {
+    const realToday = safeTodayKey(STATE);
+    if (realToday !== STATE.inventory.dateKey) {
+      ensureDayRollover();
+      refreshTopbar();
+      refreshStoreInv();
+      if ($("#view-add").classList.contains("active")) refreshAddView();
+      if ($("#view-cards").classList.contains("active")) refreshCardsView($("#cardSearch")?.value || "");
+    }
+  }, 30000); // 30s
 }
 
 /* ---------- Rank update ---------- */
@@ -411,7 +452,7 @@ function refreshTopbar() {
 }
 
 function refreshStoreInv() {
-  $("#invExtra").textContent = Math.max(0, STATE.inventory.extraCardsBought - STATE.inventory.extraCardsUsed);
+  $("#invExtra").textContent = Math.max(0, (STATE.inventory.extraCardsBought||0) - (STATE.inventory.extraCardsUsed||0));
   $("#invSkip").textContent = STATE.inventory.skip;
   $("#invHelp").textContent = STATE.inventory.help;
   $("#invFuel").textContent = STATE.inventory.fuel || 0;
@@ -516,7 +557,6 @@ function showView(id) {
   $(`#view-${id}`).classList.add("active");
 
   if (id === "add") {
-    // لمنع بقاء نص سابق داخل الحقول
     clearAddInputs();
     refreshAddView();
   }
@@ -531,7 +571,6 @@ const HELP_TEXTS = {
 
 /* ---------- Add flow rules ---------- */
 function canExitAddView() {
-  // القاعدة الصحيحة: إذا بدأ إضافة اليوم ولم يصل 4 => ممنوع الخروج (حتى لو الحقول فارغة)
   return !addLockActiveToday();
 }
 
@@ -544,10 +583,7 @@ function deleteTodayProgressAndExit() {
     g.cardIds = [];
   }
 
-  // امسح الحقول فورًا
   clearAddInputs();
-
-  // ألغ القفل
   STATE.meta.addLockDateKey = null;
 
   STATE.meta.lastActivity = "تم حذف إضافة اليوم غير المكتملة.";
@@ -595,7 +631,7 @@ function saveNewCard() {
     return;
   }
 
-  setAddLockIfNeeded(); // بمجرد الحفظ يعتبر بدأ إضافة اليوم
+  setAddLockIfNeeded();
 
   const cap = todayCapacity();
   const cnt = todayCount();
@@ -630,7 +666,6 @@ function saveNewCard() {
     STATE.inventory.extraCardsUsed = Math.max(STATE.inventory.extraCardsUsed, over);
   }
 
-  // إذا وصل 4: فك القفل
   if (g.cardIds.length >= MIN_DAILY_FIRST) {
     STATE.meta.addLockDateKey = null;
   }
@@ -1537,12 +1572,10 @@ function rateHint(cardId, evalText) {
 function finishHintAll() {
   PLAY.completedHintAll = true;
 
-  // commit deltas
   STATE.wallet.gold += PLAY.goldDelta;
   STATE.wallet.xp += PLAY.xpDelta;
   applyRatingDelta(PLAY.ratingDelta);
 
-  // attendance
   const today = safeTodayKey(STATE);
   if (STATE.meta.lastAttendanceDateKey !== today) STATE.meta.streak += 1;
   STATE.meta.lastAttendanceDateKey = today;
@@ -1656,6 +1689,8 @@ function buyFuel() {
 
 /* ---------- Start play ---------- */
 function handleStartPlay() {
+  ensureDayRollover();
+
   const cards = buildLessonCards();
   if (cards.length === 0) {
     AudioFX.beep("bad");
@@ -1666,11 +1701,7 @@ function handleStartPlay() {
   }
 
   checkOverdueModal();
-
-  // إذا تم حل نافذة الاستحقاق، يبدأ اللعب
-  const today = safeTodayKey(STATE);
-  if (STATE.meta._resolvedDueTodayKey === today || STATE.meta.lastAttendanceDateKey === today) startLesson();
-  else startLesson(); // حتى لو ما ظهرت نافذة (حالات بسيطة)
+  startLesson();
 }
 
 /* ---------- Export/Import ---------- */
@@ -1707,7 +1738,6 @@ function importJSON(file) {
 /* ---------- If user tries to bypass add-lock by closing/refreshing ---------- */
 function enforceAddLockOnUnload() {
   window.addEventListener("beforeunload", () => {
-    // إذا اليوم مقفول ولم يصل 4: احذف الإضافة غير المكتملة تلقائيًا
     if (addLockActiveToday()) {
       const key = getTodayGroupKey();
       const g = STATE.groups[key];
@@ -1785,4 +1815,5 @@ function refreshAll() {
   enforceAddLockOnUnload();
   refreshAll();
   checkOverdueModal();
+  startMidnightWatcher(); // ✅ جديد
 })();
