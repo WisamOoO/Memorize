@@ -131,6 +131,9 @@ const DUE_LEVELS = new Set([1,3,6,7]);
 const MAX_DAILY_BASE = 10;
 const MIN_DAILY_FIRST = 4;
 
+// ✅ (5) مضاعفة الذهب 100%
+const GOLD_BOOST = 2.0;
+
 /* ---------- Account Level (XP -> Level) ---------- */
 function accountLevelFromXP(xp){
   const lvl = Math.floor(Math.sqrt(Math.max(0, xp) / 500)) + 1;
@@ -216,7 +219,6 @@ function safeTodayKey(state) {
     return real;
   }
   if (real < state.meta.lastSeenDateKey) {
-    // منع الرجوع بالوقت
     return state.meta.lastSeenDateKey;
   }
   state.meta.lastSeenDateKey = real;
@@ -296,21 +298,14 @@ function clearAddInputs(){
 }
 
 /* =========================================================
-   ✅ FIX: Daily rollover + Levels advance with days
-   Rule: levels ALWAYS advance each day,
-   BUT if a card is on a "due level" (1/3/6/7) and the user
-   had NO attendance that day, the level FREEZES across midnight.
-   Also: app watches midnight even if kept open.
+   Daily rollover + Levels advance with days
    ========================================================= */
 
 function updateCardLevelsAtRollover(dayKey, nextKey){
   Object.values(STATE.cards).forEach(c => {
     if (!c) return;
-
-    // المستوى 7 نهائي
     if (c.level === 7) return;
 
-    // إذا صار عمر البطاقة >=30 يوم عند بداية اليوم الجديد => 7
     const addKey = c.addDateKey || dayKey;
     const ageNext = daysBetween(addKey, nextKey);
     if (ageNext >= 30) {
@@ -318,20 +313,16 @@ function updateCardLevelsAtRollover(dayKey, nextKey){
       return;
     }
 
-    // قاعدة التجميد: إذا اليوم كان لازم تظهر البطاقة (مستوى due)
-    // والمستخدم ما سجل حضور بهذا اليوم => لا تتقدم بالميدنايت
     const noAttendanceThatDay = (STATE.meta.lastAttendanceDateKey !== dayKey);
     if (DUE_LEVELS.has(c.level) && noAttendanceThatDay) {
-      return; // freeze
+      return;
     }
 
-    // التقدم الطبيعي 0->1->2->3->4->5->6 ثم توقف
     if (c.level < 6) c.level += 1;
   });
 }
 
 function applyEndOfDay(dayKey, nextKey){
-  // streak / fuel
   if (STATE.meta.lastAttendanceDateKey !== dayKey) {
     if ((STATE.inventory.fuel || 0) > 0) {
       STATE.inventory.fuel -= 1;
@@ -342,10 +333,8 @@ function applyEndOfDay(dayKey, nextKey){
     }
   }
 
-  // levels update
   updateCardLevelsAtRollover(dayKey, nextKey);
 
-  // refund unused extra cards of that day
   const unused = Math.max(0, (STATE.inventory.extraCardsBought||0) - (STATE.inventory.extraCardsUsed||0));
   if (unused > 0) {
     const refund = Math.floor(unused * 100 * 0.5);
@@ -354,12 +343,10 @@ function applyEndOfDay(dayKey, nextKey){
     AudioFX.beep("coin");
   }
 
-  // reset daily-only counters for next day
   STATE.inventory.extraCardsBought = 0;
   STATE.inventory.extraCardsUsed = 0;
   STATE.meta.addLockDateKey = null;
 
-  // move inventory day
   STATE.inventory.dateKey = nextKey;
 }
 
@@ -372,7 +359,6 @@ function ensureDayRollover() {
     return;
   }
 
-  // لو مرّ أكثر من يوم، طبّق rollover يوم بيوم
   while (STATE.inventory.dateKey !== today) {
     const dayKey = STATE.inventory.dateKey;
     const nextKey = addDaysToKey(dayKey, 1);
@@ -392,7 +378,7 @@ function startMidnightWatcher(){
       if ($("#view-add").classList.contains("active")) refreshAddView();
       if ($("#view-cards").classList.contains("active")) refreshCardsView($("#cardSearch")?.value || "");
     }
-  }, 30000); // 30s
+  }, 30000);
 }
 
 /* ---------- Rank update ---------- */
@@ -679,20 +665,33 @@ function saveNewCard() {
   refreshAddView();
 }
 
-/* ---------- Overdue modal (mandatory) ---------- */
+/* ---------- ✅ (4) Overdue modal يظهر فقط عند غياب فعلي ---------- */
+function wasAbsentAtLeastOneDay() {
+  const today = safeTodayKey(STATE);
+  const yKey = addDaysToKey(today, -1);
+  const last = STATE.meta.lastAttendanceDateKey;
+  if (!last) return true;               // لم يسجل حضور سابقًا = يعتبر غياب
+  if (last === today) return false;     // حاضر اليوم
+  if (last === yKey) return false;      // حاضر أمس
+  return true;                          // غير ذلك = غياب يوم أو أكثر
+}
+
 function checkOverdueModal() {
   const today = safeTodayKey(STATE);
-  const dueGroups = dueGroupsToday();
-  if (dueGroups.length === 0) return;
-
+  if (!wasAbsentAtLeastOneDay()) return;                 // ✅ لا رسالة بدون غياب
   if (STATE.meta._resolvedDueTodayKey === today) return;
-  if (STATE.meta.lastAttendanceDateKey === today) return;
+
+  const yKey = addDaysToKey(today, -1);
+
+  // فقط مجموعات الأيام السابقة (ليس اليوم)
+  const dueGroups = dueGroupsToday().filter(g => (g?.dateKey || g?.id) <= yKey);
+  if (dueGroups.length === 0) return;
 
   const decisions = {};
 
   const body = document.createElement("div");
   body.innerHTML = `<div class="muted" style="margin-bottom:10px">
-    لديك مجموعات يومية مستحقة. اختر إجراءً لكل مجموعة ثم اضغط "حسنًا".
+    لديك مجموعات يومية تم تفويتها بسبب الغياب. اختر إجراءً لكل مجموعة ثم اضغط "حسنًا".
   </div>`;
 
   const list = document.createElement("div");
@@ -705,7 +704,7 @@ function checkOverdueModal() {
     row.innerHTML = `
       <div style="display:flex;justify-content:space-between;gap:10px;align-items:center">
         <div style="font-weight:1000">لقد فوّت المجموعة <b>${escapeHTML(g.name)}</b>. هل تود مراجعتها؟</div>
-        <div class="badge">مستحقة</div>
+        <div class="badge">متأخرة</div>
       </div>
       <div class="btnRow" style="margin-top:10px">
         <button class="btn" data-k="${g.id}" data-v="review">مراجعة</button>
@@ -767,13 +766,13 @@ function checkOverdueModal() {
     });
 
     STATE.meta._resolvedDueTodayKey = today;
-    STATE.meta.lastActivity = "تم تحديد إجراء للمجموعات المستحقة.";
+    STATE.meta.lastActivity = "تم تحديد إجراء للمجموعات المتأخرة.";
     saveState(STATE);
     closeModal();
     refreshTopbar();
   });
 
-  openModal("مجموعات مستحقة", body.outerHTML, [btnAllReview, btnAllReset, btnAllIgnore, ok], { closable:false });
+  openModal("مجموعات متأخرة", body.outerHTML, [btnAllReview, btnAllReset, btnAllIgnore, ok], { closable:false });
 }
 
 /* ---------- Lesson / Games ---------- */
@@ -809,15 +808,21 @@ function startLesson() {
     goldDelta: 0,
     xpDelta: 0,
     ratingDelta: 0,
-    usedHelpInGame: false,
+
     cards,
     gameQueue,
     playedGames: [],
     inHint: false,
+
     scrambledIds: [],
     typingIds: [],
     hintIndex: 0,
     completedHintAll: false,
+
+    // ✅ (2) سجل مساعدات لكل لعبة منفصل
+    currentGame: null,
+    helpHistory: { matching: [], flip: [], scrambled: [], typing: [] },
+    usedHelpInGame: false,
   };
 
   const dueIds = cards.map(c=>c.id);
@@ -829,10 +834,13 @@ function startLesson() {
   PLAY.typingIds = pick2;
 
   showView("play");
+
+  // ✅ (1) زر التالي يظهر فقط إن بقي ألعاب
   $("#btnNextGame").style.display = "";
   $("#btnGoHint").style.display = "";
   $("#btnSkip").style.display = "";
   $("#btnHelp").style.display = "";
+  $("#btnHelpLog").style.display = "";
 
   updateHUD();
   startTimer();
@@ -866,16 +874,72 @@ function currentAverageLevelMultiplier() {
   return lvls.reduce((a,b)=>a+b,0) / Math.max(1, lvls.length);
 }
 
+function addXP(amount){ PLAY.xpDelta += Math.max(0, amount|0); }
+
+// ✅ (5) مضاعفة ذهب الألعاب هنا فقط
+function addGold(amount){
+  const boosted = Math.round((amount|0) * GOLD_BOOST);
+  PLAY.goldDelta += boosted;
+}
+
+function addRating(amount){ PLAY.ratingDelta += (amount|0); }
+
+function speedFactorFromGame(sec){ return speedFactor(sec); }
+
+function finalizeGoldWithHelpPenalty(goldRaw, minGold) {
+  let g = goldRaw;
+  if (PLAY.usedHelpInGame) g = Math.floor(g * 0.85);
+  g = Math.max(minGold, Math.min(75, g));
+  return g;
+}
+
+function awardOnCorrect(baseXP, baseRate, sec, cardLevel) {
+  const F = speedFactorFromGame(sec);
+  const L = levelMultiplier(cardLevel);
+  const D = difficultyD(STATE.rank);
+  addXP(Math.round(baseXP * F * L * (1 + 0.01*STATE.rank.tierIndex)));
+  addRating(Math.round((baseRate * F * L) / D));
+}
+function awardOnWrong(minXP, baseLoss, cardLevel, errorFactor=1.0) {
+  const L = levelMultiplier(cardLevel);
+  const D = difficultyD(STATE.rank);
+  addXP(Math.round(minXP * L));
+  addRating(-Math.round(Math.abs(baseLoss) * errorFactor * L * D));
+}
+function errorFactorFromErrors(e) {
+  if (e >= 10) return 1.7;
+  if (e >= 6) return 1.3;
+  return 1.0;
+}
+
+function hasNextGame(){
+  return PLAY.gameQueue.some(g => !PLAY.playedGames.includes(g));
+}
+
+// ✅ (1) إخفاء زر التالي تلقائيًا
+function syncNextGameButton(){
+  if (!hasNextGame() || PLAY.inHint) {
+    $("#btnNextGame").style.display = "none";
+  } else {
+    $("#btnNextGame").style.display = "";
+  }
+}
+
+/* ---------- Perfect game rewards ---------- */
 function applyPerfectGameRewards() {
   const L = currentAverageLevelMultiplier();
   const D = difficultyD(STATE.rank);
-  PLAY.goldDelta += 75;
+
+  // ذهب مثالي (سيُضاعف عبر addGold)
+  addGold(75);
   PLAY.xpDelta += Math.round(220 * L);
   PLAY.ratingDelta += Math.round((60 * L) / D);
+
   AudioFX.beep("coin");
   updateHUD();
 }
 
+/* ---------- Skip/Help inventory ---------- */
 function consumeSkipOrAskBuy() {
   if (STATE.inventory.skip <= 0) {
     AudioFX.beep("bad");
@@ -899,11 +963,14 @@ function consumeHelpOrAskBuy() {
   return true;
 }
 
+/* ---------- Games routing ---------- */
 function launchNextGame() {
   PLAY.usedHelpInGame = false;
+
   const next = PLAY.gameQueue.find(g => !PLAY.playedGames.includes(g));
   if (!next) {
-    $("#btnNextGame").style.display = "none";
+    // ✅ (1) بعد اللعبة الرابعة: اخفِ زر التالي
+    syncNextGameButton();
     return;
   }
   renderGame(next);
@@ -928,16 +995,44 @@ function gameSubtitle(k) {
   }[k] || "");
 }
 
+function openHelpLogForCurrentGame(){
+  const g = PLAY.currentGame;
+  if (!g || g === "hint") return;
+  const arr = PLAY.helpHistory[g] || [];
+  if (arr.length === 0) {
+    openModal("سجل المساعدات", "لم تستخدم أي مساعدة في هذه اللعبة.", [makeBtn("إغلاق","btn primary", closeModal)]);
+    return;
+  }
+  openModal("سجل المساعدات", `
+    <div class="muted">اللعبة: <b>${escapeHTML(gameTitle(g))}</b></div>
+    <div class="divider"></div>
+    ${arr.map((x,i)=>`<div class="muted">${i+1}) ${escapeHTML(x)}</div>`).join("")}
+  `, [makeBtn("إغلاق","btn primary", closeModal)]);
+}
+
 function renderGame(gameKey) {
   $("#gameArea").innerHTML = "";
   $("#playTitle").textContent = gameTitle(gameKey);
   $("#playSub").textContent = gameSubtitle(gameKey);
 
-  $("#btnSkip").style.display = (gameKey !== "hint") ? "" : "none";
-  $("#btnHelp").style.display = (gameKey !== "hint") ? "" : "none";
+  PLAY.currentGame = gameKey;
+
+  const isHint = (gameKey === "hint");
+
+  $("#btnSkip").style.display = !isHint ? "" : "none";
+  $("#btnHelp").style.display = !isHint ? "" : "none";
+  $("#btnHelpLog").style.display = !isHint ? "" : "none";
+
+  // ✅ (1) حافظ على حالة زر التالي
+  syncNextGameButton();
+
+  $("#btnHelpLog").onclick = () => {
+    AudioFX.beep("click");
+    openHelpLogForCurrentGame();
+  };
 
   $("#btnSkip").onclick = () => {
-    if (gameKey === "hint") return;
+    if (isHint) return;
     if (!consumeSkipOrAskBuy()) return;
 
     openModal("تأكيد التخطي", "هل تريد تخطي هذه اللعبة والحصول على مكاسب مثالية؟", [
@@ -954,7 +1049,7 @@ function renderGame(gameKey) {
   };
 
   $("#btnHelp").onclick = () => {
-    if (gameKey === "hint") return;
+    if (isHint) return;
     if (!consumeHelpOrAskBuy()) return;
 
     STATE.inventory.help -= 1;
@@ -962,10 +1057,11 @@ function renderGame(gameKey) {
     saveState(STATE);
     refreshStoreInv();
 
-    if (gameKey === "matching") matchingHelp();
-    if (gameKey === "flip") flipHelp();
-    if (gameKey === "scrambled") scrambledHelp();
-    if (gameKey === "typing") typingHelp();
+    // ✅ (2) تسجّل المساعدة ضمن سجل اللعبة الحالية
+    if (gameKey === "matching") matchingHelp(true);
+    if (gameKey === "flip") flipHelp(true);
+    if (gameKey === "scrambled") scrambledHelp(true);
+    if (gameKey === "typing") typingHelp(true);
 
     AudioFX.beep("click");
   };
@@ -975,37 +1071,6 @@ function renderGame(gameKey) {
   if (gameKey === "scrambled") gameScrambled();
   if (gameKey === "typing") gameTyping();
   if (gameKey === "hint") gameHint();
-}
-
-/* ---------- Scoring ---------- */
-function addXP(amount){ PLAY.xpDelta += Math.max(0, amount|0); }
-function addGold(amount){ PLAY.goldDelta += (amount|0); }
-function addRating(amount){ PLAY.ratingDelta += (amount|0); }
-
-function finalizeGoldWithHelpPenalty(goldRaw, minGold) {
-  let g = goldRaw;
-  if (PLAY.usedHelpInGame) g = Math.floor(g * 0.85);
-  g = Math.max(minGold, Math.min(75, g));
-  return g;
-}
-
-function awardOnCorrect(baseXP, baseRate, sec, cardLevel) {
-  const F = speedFactor(sec);
-  const L = levelMultiplier(cardLevel);
-  const D = difficultyD(STATE.rank);
-  addXP(Math.round(baseXP * F * L * (1 + 0.01*STATE.rank.tierIndex)));
-  addRating(Math.round((baseRate * F * L) / D));
-}
-function awardOnWrong(minXP, baseLoss, cardLevel, errorFactor=1.0) {
-  const L = levelMultiplier(cardLevel);
-  const D = difficultyD(STATE.rank);
-  addXP(Math.round(minXP * L));
-  addRating(-Math.round(Math.abs(baseLoss) * errorFactor * L * D));
-}
-function errorFactorFromErrors(e) {
-  if (e >= 10) return 1.7;
-  if (e >= 6) return 1.3;
-  return 1.0;
 }
 
 /* ---------- Matching ---------- */
@@ -1077,7 +1142,7 @@ function matchingClick(t, el) {
     MATCH.correct++;
 
     awardOnCorrect(12, 6, dt, Math.max(first.level, t.level));
-    const F = speedFactor(dt);
+    const F = speedFactorFromGame(dt);
     const L = levelMultiplier(Math.max(first.level, t.level));
     MATCH.goldRaw += (3 * F * L);
 
@@ -1110,6 +1175,7 @@ function finishMatching() {
   AudioFX.beep("coin");
 
   PLAY.playedGames.push("matching");
+  syncNextGameButton();
   afterGameFinished("matching");
 }
 
@@ -1196,7 +1262,7 @@ function flipClick(t, el) {
         FLIP.lastMatchAt = performance.now();
 
         const sec = dt;
-        const F = speedFactor(sec);
+        const F = speedFactorFromGame(sec);
         const L = levelMultiplier(Math.max(a.t.level, b.t.level));
         const D = difficultyD(STATE.rank);
 
@@ -1236,6 +1302,7 @@ function finishFlip() {
   AudioFX.beep("coin");
 
   PLAY.playedGames.push("flip");
+  syncNextGameButton();
   afterGameFinished("flip");
 }
 
@@ -1306,7 +1373,7 @@ function renderScrambledCard() {
     if (SCR.answer === original) {
       SCR.correct++;
       awardOnCorrect(14, 7, dt, c.level);
-      const F = speedFactor(dt);
+      const F = speedFactorFromGame(dt);
       const L = levelMultiplier(c.level);
       SCR.goldRaw += (4 * F * L);
 
@@ -1340,11 +1407,19 @@ function finishScrambled() {
   AudioFX.beep("coin");
 
   PLAY.playedGames.push("scrambled");
+  syncNextGameButton();
   afterGameFinished("scrambled");
 }
 
 /* ---------- Typing ---------- */
 let TYP = null;
+
+function normalizeTextForTyping(s){
+  return String(s ?? "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
 
 function gameTyping() {
   const ids = PLAY.typingIds;
@@ -1368,7 +1443,7 @@ function renderTypingCard() {
     <div class="field">
       <label>اكتب النص الأصلي</label>
       <input id="typeIn" placeholder="اكتب هنا..." />
-      <div class="tiny">المقارنة حرف بحرف وتشمل الرموز.</div>
+      <div class="tiny">المقارنة تتجاهل حالة الأحرف والفراغات قبل/بعد وتكرار الفراغات.</div>
     </div>
     <div class="centerRow">
       <button class="btn primary" id="typeOk"><span class="material-symbols-rounded">check</span>موافق</button>
@@ -1383,11 +1458,14 @@ function renderTypingCard() {
     const dt = (performance.now() - TYP.lastAt)/1000;
     TYP.lastAt = performance.now();
 
-    const v = input.value;
-    if (v === c.foreign) {
+    // ✅ (3) تجاهل case + trim + تعدد الفراغات
+    const v = normalizeTextForTyping(input.value);
+    const target = normalizeTextForTyping(c.foreign);
+
+    if (v === target) {
       TYP.correct++;
       awardOnCorrect(16, 8, dt, c.level);
-      const F = speedFactor(dt);
+      const F = speedFactorFromGame(dt);
       const L = levelMultiplier(c.level);
       TYP.goldRaw += (5 * F * L);
 
@@ -1421,23 +1499,28 @@ function finishTyping() {
   AudioFX.beep("coin");
 
   PLAY.playedGames.push("typing");
+  syncNextGameButton();
   afterGameFinished("typing");
 }
 
-/* ---------- Help effects ---------- */
-function matchingHelp() {
+/* ---------- Help effects + logging ---------- */
+function matchingHelp(logIt=false) {
   const remaining = PLAY.cards.filter(c => !STATE.ignoreList[c.id]);
   if (!remaining.length) return;
   const pick = remaining[Math.floor(Math.random()*remaining.length)];
+
   const tiles = $$("#gameArea .tile").filter(t => !t.classList.contains("gone"));
   const a = tiles.find(x => x.textContent === pick.foreign);
   const b = tiles.find(x => x.textContent === pick.native);
+
   if (a) a.classList.add("sel");
   if (b) b.classList.add("sel");
   setTimeout(()=>{ if(a) a.classList.remove("sel"); if(b) b.classList.remove("sel"); }, 900);
+
+  if (logIt) PLAY.helpHistory.matching.push(`تلميح زوج: "${pick.foreign}" ↔ "${pick.native}"`);
 }
 
-function flipHelp() {
+function flipHelp(logIt=false) {
   const tiles = $$("#gameArea .tile");
   tiles.forEach(el => {
     const id = el.dataset.id;
@@ -1458,43 +1541,56 @@ function flipHelp() {
       el.textContent = "✦";
     });
   }, 1500);
+
+  if (logIt) PLAY.helpHistory.flip.push("عرض سريع لجميع البطاقات لمدة 1.5 ثانية.");
 }
 
-function scrambledHelp() {
+function scrambledHelp(logIt=false) {
   const c = SCR?.cards?.[SCR.idx];
   if (!c) return;
   const next = c.foreign.charAt(SCR.answer.length);
+
   openModal("مساعدة", `الحرف التالي: <b>${escapeHTML(next || "")}</b>`, [makeBtn("حسنًا","btn primary", closeModal)]);
+  if (logIt) PLAY.helpHistory.scrambled.push(`الحرف التالي كان: "${next || ""}"`);
 }
 
-function typingHelp() {
+function typingHelp(logIt=false) {
   const c = TYP?.cards?.[TYP.idx];
   if (!c) return;
   const input = $("#typeIn");
   if (!input) return;
-  const typed = input.value;
+
+  const typed = input.value || "";
   const next = c.foreign.charAt(typed.length);
+
   openModal("مساعدة", `الحرف التالي: <b>${escapeHTML(next || "")}</b>`, [makeBtn("حسنًا","btn primary", closeModal)]);
+  if (logIt) PLAY.helpHistory.typing.push(`الحرف التالي كان: "${next || ""}"`);
 }
 
 /* ---------- After game finished ---------- */
 function afterGameFinished(gameKey) {
   const done4 = ["matching","flip","scrambled","typing"].every(g => PLAY.playedGames.includes(g));
-  if (done4) $("#btnNextGame").style.display = "none";
+  syncNextGameButton();
+
+  const btns = [];
+
+  // ✅ (1) بعد اللعبة الرابعة: لا زر "اللعبة التالية" في النافذة
+  if (!done4 && hasNextGame()) {
+    btns.push(makeBtn("اللعبة التالية","btn primary", () => {
+      closeModal();
+      launchNextGame();
+    }));
+  }
+
+  btns.push(makeBtn("تقييم البطاقات","btn primary alt", () => {
+    closeModal();
+    goToHint();
+  }));
 
   openModal("تم إنهاء اللعبة", `
     <div class="muted">اللعبة: <b>${escapeHTML(gameTitle(gameKey))}</b></div>
-    <div class="muted">يمكنك اختيار اللعبة التالية أو الانتقال لتقييم البطاقات.</div>
-  `, [
-    makeBtn("اللعبة التالية","btn primary", () => {
-      closeModal();
-      if (!done4) launchNextGame();
-    }),
-    makeBtn("تقييم البطاقات","btn primary alt", () => {
-      closeModal();
-      goToHint();
-    })
-  ]);
+    <div class="muted">يمكنك الانتقال لتقييم البطاقات، أو متابعة الألعاب المتبقية إن وجدت.</div>
+  `, btns);
 }
 
 /* ---------- Hint (mandatory attendance) ---------- */
@@ -1508,6 +1604,7 @@ function gameHint() {
   $("#btnGoHint").style.display = "none";
   $("#btnSkip").style.display = "none";
   $("#btnHelp").style.display = "none";
+  $("#btnHelpLog").style.display = "none";
 
   PLAY.hintIndex = 0;
   renderHintCard();
@@ -1763,9 +1860,7 @@ function wireUI() {
   $("#btnSaveCard").onclick = () => { AudioFX.beep("click"); saveNewCard(); };
 
   ["#inForeign","#inNative","#inHint"].forEach(id=>{
-    $(id).addEventListener("input", () => {
-      setLockOnAnyInput();
-    });
+    $(id).addEventListener("input", () => setLockOnAnyInput());
   });
 
   $("#btnBackFromStore").onclick = () => { AudioFX.beep("click"); showView("home"); };
@@ -1785,7 +1880,17 @@ function wireUI() {
   });
 
   $("#btnExitPlay").onclick = () => { AudioFX.beep("click"); handleExitPlay(); };
-  $("#btnNextGame").onclick = () => { AudioFX.beep("click"); launchNextGame(); };
+
+  // ✅ (1) زر التالي لا يعمل إلا إذا فيه لعبة
+  $("#btnNextGame").onclick = () => {
+    AudioFX.beep("click");
+    if (!hasNextGame()) {
+      syncNextGameButton();
+      return;
+    }
+    launchNextGame();
+  };
+
   $("#btnGoHint").onclick = () => { AudioFX.beep("click"); goToHint(); };
 
   $$(".qBtn").forEach(b => {
@@ -1815,5 +1920,5 @@ function refreshAll() {
   enforceAddLockOnUnload();
   refreshAll();
   checkOverdueModal();
-  startMidnightWatcher(); // ✅ جديد
+  startMidnightWatcher();
 })();
