@@ -39,7 +39,6 @@ body{
 }
 
 input, button, textarea { font: inherit; }
-button { -webkit-tap-highlight-color: transparent; }
 
 #app{
   min-height:100%;
@@ -47,7 +46,7 @@ button { -webkit-tap-highlight-color: transparent; }
   flex-direction:column;
 }
 
-.hud, .nav, .views{
+.hud, .nav, .views, .authGate{
   width: min(var(--maxw), 100%);
   margin-inline:auto;
 }
@@ -73,6 +72,9 @@ button { -webkit-tap-highlight-color: transparent; }
 .brand__name{font-weight:800; font-size:18px;}
 .brand__sub{font-size:12px; color:var(--muted); margin-top:2px;}
 
+.brand--auth .brand__logo{width:52px;height:52px;border-radius:16px}
+.brand--auth .brand__name{font-size:22px}
+
 .hud__right{
   display:flex;
   gap:10px;
@@ -92,11 +94,8 @@ button { -webkit-tap-highlight-color: transparent; }
   white-space: nowrap;
 }
 .pill .material-icons{font-size:18px; opacity:.95;}
-.pillBtn{
-  cursor:pointer;
-  transition: transform .15s ease, background .2s ease;
-}
-.pillBtn:hover{transform: translateY(-1px); background: rgba(255,255,255,.08);}
+.pill--click{cursor:pointer}
+.pill--click:hover{transform: translateY(-1px); background: rgba(255,255,255,.08);}
 
 /* NAV */
 .nav{
@@ -233,7 +232,6 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
 }
 .btn--ghost{background: transparent;}
 .btn--small{padding:10px 12px; border-radius:12px; font-weight:800;}
-.authWide{width:100%; justify-content:center;}
 
 .divider{
   height:1px;
@@ -306,7 +304,6 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
 @media (max-width: 980px){
   .formGrid{grid-template-columns:1fr;}
 }
-.authGrid{grid-template-columns: 1fr; margin-top:14px;}
 
 .field label{display:flex; align-items:center; justify-content:space-between; gap:10px; font-weight:900; margin-bottom:8px}
 .field input{
@@ -632,46 +629,54 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
 }
 
 /* AUTH */
-#authApp{min-height:100%; display:flex; flex-direction:column;}
-.authHud{width: min(var(--maxw), 100%); margin-inline:auto;}
-.authWrap{
-  flex:1;
-  width: min(var(--maxw), 100%);
-  margin-inline:auto;
-  padding: 10px calc(14px + var(--safe-right)) calc(24px + var(--safe-bottom)) calc(14px + var(--safe-left));
-  display:flex;
-  align-items:center;
-  justify-content:center;
+.authGate{
+  padding: calc(18px + var(--safe-top)) calc(14px + var(--safe-right)) calc(18px + var(--safe-bottom)) calc(14px + var(--safe-left));
 }
-.authPanel{width: min(560px, 100%);}
-.authRow{display:flex; gap:10px; flex-wrap:wrap;}
+.authPanel{max-width: 900px; margin: 0 auto;}
+.authHeader{display:flex;justify-content:center}
+.authTabs{
+  display:flex; gap:10px; flex-wrap:wrap;
+}
+.authTab{
+  flex:1 1 180px;
+  padding:12px 14px;
+  border-radius:14px;
+  border:1px solid var(--line);
+  background: rgba(255,255,255,.05);
+  color: var(--txt);
+  font-weight:900;
+  cursor:pointer;
+}
+.authTab.active{
+  background: linear-gradient(135deg, rgba(124,58,237,.35), rgba(6,182,212,.20));
+  border-color: rgba(124,58,237,.55);
+}
+.authBox{display:none;margin-top:12px}
+.authBox.active{display:block}
+.formGrid--auth{grid-template-columns: repeat(2, minmax(0,1fr));}
+@media (max-width: 720px){
+  .formGrid--auth{grid-template-columns:1fr;}
+}
 
-/* Visual game effects */
+/* Effects */
 @keyframes pop {
-  0% { transform: scale(1); }
-  45% { transform: scale(1.06); }
-  100% { transform: scale(1); }
+  0%{transform:scale(.96)}
+  60%{transform:scale(1.04)}
+  100%{transform:scale(1)}
 }
 @keyframes shake {
-  0% { transform: translateX(0); }
-  20% { transform: translateX(-6px); }
-  40% { transform: translateX(6px); }
-  60% { transform: translateX(-4px); }
-  80% { transform: translateX(4px); }
-  100% { transform: translateX(0); }
+  0%{transform:translateX(0)}
+  20%{transform:translateX(-6px)}
+  40%{transform:translateX(6px)}
+  60%{transform:translateX(-4px)}
+  80%{transform:translateX(4px)}
+  100%{transform:translateX(0)}
 }
-.pop { animation: pop .22s ease; }
-.shake { animation: shake .28s ease; }
-
-.spark{
-  position:absolute;
-  inset:0;
-  border-radius:16px;
-  pointer-events:none;
-  background: radial-gradient(240px 120px at 50% 40%, rgba(34,197,94,.25), transparent 60%);
-  opacity:0;
+@keyframes glow {
+  0%{box-shadow:0 0 0 0 rgba(34,197,94,.0)}
+  50%{box-shadow:0 0 0 6px rgba(34,197,94,.18)}
+  100%{box-shadow:0 0 0 0 rgba(34,197,94,.0)}
 }
-.spark.on{
-  opacity:1;
-  animation: pop .22s ease;
-}
+.fx-pop{animation: pop .18s ease;}
+.fx-shake{animation: shake .25s ease;}
+.fx-glow{animation: glow .35s ease;}
