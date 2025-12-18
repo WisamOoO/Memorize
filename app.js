@@ -1,27 +1,39 @@
-/* app.js (ESM) */
+/* app.js (Firebase + Firestore + AppCheck + Auth Gate) */
 
-import { initializeApp } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-app.js";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
 import {
   getAuth,
   onAuthStateChanged,
-  signOut,
-  deleteUser,
-  EmailAuthProvider,
-  reauthenticateWithCredential,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
   GoogleAuthProvider,
-  reauthenticateWithPopup
-} from "https://www.gstatic.com/firebasejs/12.3.0/firebase-auth.js";
+  signInWithPopup,
+  sendEmailVerification,
+  sendPasswordResetEmail,
+  signOut,
+  updateProfile,
+  deleteUser,
+  reload
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+
 import {
   getFirestore,
   doc,
   getDoc,
   setDoc,
-  deleteDoc,
-  onSnapshot,
-  serverTimestamp
-} from "https://www.gstatic.com/firebasejs/12.3.0/firebase-firestore.js";
+  deleteDoc
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 
-/* Firebase Config */
+import {
+  initializeAppCheck,
+  ReCaptchaV3Provider
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app-check.js";
+
+/* ---------- DOM helpers ---------- */
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
+/* ---------- Firebase config (yours) ---------- */
 const firebaseConfig = {
   apiKey: "AIzaSyCK1j_ILN12Vok3N6it1dgYNphqJVP0axw",
   authDomain: "memorize-game-bb7e8.firebaseapp.com",
@@ -32,12 +44,17 @@ const firebaseConfig = {
   measurementId: "G-CK46BP6YJ3"
 };
 
-const fbApp = initializeApp(firebaseConfig);
-const auth = getAuth(fbApp);
-const db = getFirestore(fbApp);
+const APP_CHECK_SITE_KEY = "6LfC6i8sAAAAAFze6mVK6Ve3erMC3ccdIa8sWsSf";
 
-const $ = (sel) => document.querySelector(sel);
-const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+/* ---------- Firebase init ---------- */
+const APP = initializeApp(firebaseConfig);
+initializeAppCheck(APP, {
+  provider: new ReCaptchaV3Provider(APP_CHECK_SITE_KEY),
+  isTokenAutoRefreshEnabled: true
+});
+
+const AUTH = getAuth(APP);
+const DB = getFirestore(APP);
 
 /* ---------- Audio ---------- */
 const AudioFX = (() => {
@@ -57,7 +74,6 @@ const AudioFX = (() => {
       if (type==="bad"){freq=180; dur=0.10; vol=0.07;}
       if (type==="coin"){freq=880; dur=0.05; vol=0.05;}
       if (type==="rank"){freq=520; dur=0.12; vol=0.06;}
-      if (type==="whoosh"){freq=320; dur=0.14; vol=0.05;}
       o.frequency.setValueAtTime(freq, t);
       g.gain.setValueAtTime(vol, t);
       g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
@@ -67,6 +83,15 @@ const AudioFX = (() => {
   }
   return {beep};
 })();
+
+/* ---------- Visual effects ---------- */
+function fx(el, cls){
+  if (!el) return;
+  el.classList.remove(cls);
+  void el.offsetWidth;
+  el.classList.add(cls);
+  setTimeout(()=> el.classList.remove(cls), 450);
+}
 
 /* ---------- Modal ---------- */
 function escapeHTML(s) {
@@ -128,6 +153,38 @@ function makeBtn(htmlText, cls="btn", onClick=()=>{}) {
   return b;
 }
 
+/* ---------- Cloud State ---------- */
+let USER = null;
+let STATE = null;
+let STATE_REF = null;
+
+let SAVE_TMR = null;
+let SAVE_PENDING = false;
+
+function scheduleSave(reason="") {
+  if (!USER || !STATE || !STATE_REF) return;
+  SAVE_PENDING = true;
+  if (SAVE_TMR) clearTimeout(SAVE_TMR);
+  SAVE_TMR = setTimeout(async () => {
+    try{
+      await setDoc(STATE_REF, STATE, { merge: true });
+      SAVE_PENDING = false;
+    }catch(e){
+      // صامت: لأن Firestore قد يفشل مؤقتاً (شبكة)
+      console.warn("save failed", e?.code || e);
+    }
+  }, 450);
+}
+
+async function loadStateFromCloud(uid){
+  STATE_REF = doc(DB, "users", uid, "app", "state");
+  const snap = await getDoc(STATE_REF);
+  if (snap.exists()) return snap.data();
+  const s = defaultState();
+  await setDoc(STATE_REF, s, { merge: false });
+  return s;
+}
+
 /* ---------- Date helpers ---------- */
 function nowISODateKey() {
   const d = new Date();
@@ -149,6 +206,35 @@ function daysBetween(aKey, bKey){
   const b = parseDateKey(bKey);
   const ms = b - a;
   return Math.floor(ms / (1000*60*60*24));
+}
+
+/* ---------- Defaults ---------- */
+function defaultState() {
+  const dateKey = nowISODateKey();
+  return {
+    meta: {
+      createdAt: Date.now(),
+      lastSeenDateKey: dateKey,
+      lastAttendanceDateKey: null,
+      streak: 0,
+      lastActivity: "لا يوجد.",
+      addLockDateKey: null,
+      _resolvedDueTodayKey: null
+    },
+    wallet: { gold: 900, xp: 0 },
+    rank: { tierIndex: 0, subLevel: 1, progress: 0 },
+    inventory: {
+      dateKey,
+      extraCardsBought: 0,
+      extraCardsUsed: 0,
+      skip: 0,
+      help: 0,
+      fuel: 0
+    },
+    groups: {},
+    cards: {},
+    ignoreList: {}
+  };
 }
 
 /* ---------- Constants ---------- */
@@ -197,115 +283,71 @@ function accountLevelFromXP(xp){
   return { level: lvl, curMinXP, nextMinXP, toNext: Math.max(0, nextMinXP - xp) };
 }
 
-/* ---------- Cloud state ---------- */
-let UID = null;
-let USER_NAME = "—";
-let unsubSnap = null;
-let syncFromCloud = false;
-let saveTimer = null;
-
-function cloudRef(){
-  // وثيقة واحدة لحفظ الحالة (قد تصل لاحقًا لحد الحجم إذا تضخمّت البيانات)
-  return doc(db, "users", UID, "app", "state");
+/* ---------- Auth Gate UI ---------- */
+function showAuthGate(){
+  $("#view-auth").classList.add("active");
+  $("#hudBar").style.display = "none";
+  $("#navBar").style.display = "none";
+  $("#mainViews").style.display = "none";
 }
-function profileRef(){
-  return doc(db, "users", UID);
-}
-
-function defaultState() {
-  const dateKey = nowISODateKey();
-  return {
-    meta: {
-      createdAt: Date.now(),
-      lastSeenDateKey: dateKey,
-      lastAttendanceDateKey: null,
-      streak: 0,
-      lastActivity: "لا يوجد.",
-      addLockDateKey: null,
-      _resolvedDueTodayKey: null
-    },
-    wallet: { gold: 900, xp: 0 },
-    rank: { tierIndex: 0, subLevel: 1, progress: 0 },
-    inventory: {
-      dateKey,
-      extraCardsBought: 0,
-      extraCardsUsed: 0,
-      skip: 0,
-      help: 0,
-      fuel: 0
-    },
-    groups: {},
-    cards: {},
-    ignoreList: {}
-  };
+function showMainApp(){
+  $("#view-auth").classList.remove("active");
+  $("#hudBar").style.display = "";
+  $("#navBar").style.display = "";
+  $("#mainViews").style.display = "";
 }
 
-function migrateState(s){
-  const d = defaultState();
-  const out = s && typeof s === "object" ? s : d;
-
-  out.meta = out.meta || d.meta;
-  out.wallet = out.wallet || d.wallet;
-  out.rank = out.rank || d.rank;
-  out.inventory = out.inventory || d.inventory;
-  out.groups = out.groups || {};
-  out.cards = out.cards || {};
-  out.ignoreList = out.ignoreList || {};
-
-  if (typeof out.wallet.gold !== "number") out.wallet.gold = 900;
-  if (typeof out.wallet.xp !== "number") out.wallet.xp = 0;
-
-  if (typeof out.rank.tierIndex !== "number") out.rank.tierIndex = 0;
-  if (typeof out.rank.subLevel !== "number") out.rank.subLevel = 1;
-  if (typeof out.rank.progress !== "number") out.rank.progress = 0;
-
-  return out;
-}
-
-async function cloudSaveNow(){
-  if (!UID) return;
-  if (syncFromCloud) return;
-
-  try{
-    await setDoc(cloudRef(), {
-      state: STATE,
-      updatedAt: serverTimestamp()
-    }, { merge: true });
-  }catch{
-    // تجاهل مؤقتًا
+/* ---------- Password strength ---------- */
+function isSequentialDigits(s){
+  const digits = s.replace(/\D/g,"");
+  if (digits.length < 4) return false;
+  for (let i=0;i<=digits.length-4;i++){
+    const chunk = digits.slice(i,i+4);
+    let asc = true;
+    for (let k=1;k<chunk.length;k++){
+      if (Number(chunk[k]) !== Number(chunk[k-1])+1) { asc = false; break; }
+    }
+    if (asc) return true;
   }
+  return false;
 }
-function cloudSaveDebounced(){
-  if (!UID) return;
-  if (syncFromCloud) return;
-
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    cloudSaveNow();
-  }, 450);
+function tooMuchRepeat(s){
+  // 4 نفس الحرف وراء بعض
+  return /(.)\1\1\1/.test(s);
+}
+function validatePassword(pw){
+  if (!pw || pw.length < 8) return "كلمة المرور يجب أن تكون 8 أحرف على الأقل.";
+  if (isSequentialDigits(pw)) return "تجنب التسلسلات الرقمية مثل 1234.";
+  if (tooMuchRepeat(pw)) return "تجنب تكرار نفس الحرف كثيرًا.";
+  return null;
 }
 
-/* ---------- STATE ---------- */
-let STATE = defaultState();
+/* ---------- Normalize for typing ---------- */
+function normText(s){
+  return String(s ?? "")
+    .normalize("NFKC")
+    .trim()
+    .toLocaleLowerCase();
+}
 
-/* ---------- Helpers ---------- */
+/* ---------- State helpers ---------- */
+function safeTodayKey() {
+  const real = nowISODateKey();
+  if (!STATE.meta.lastSeenDateKey) {
+    STATE.meta.lastSeenDateKey = real;
+    return real;
+  }
+  if (real < STATE.meta.lastSeenDateKey) {
+    return STATE.meta.lastSeenDateKey;
+  }
+  STATE.meta.lastSeenDateKey = real;
+  return real;
+}
 function uuid() {
   return "c_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
 }
-function safeTodayKey(state) {
-  const real = nowISODateKey();
-  if (!state.meta.lastSeenDateKey) {
-    state.meta.lastSeenDateKey = real;
-    return real;
-  }
-  if (real < state.meta.lastSeenDateKey) {
-    return state.meta.lastSeenDateKey;
-  }
-  state.meta.lastSeenDateKey = real;
-  return real;
-}
 function getTodayGroupKey() {
-  return safeTodayKey(STATE);
+  return safeTodayKey();
 }
 function getOrCreateTodayGroup() {
   const key = getTodayGroupKey();
@@ -335,7 +377,7 @@ function dueGroupsToday() {
   return Array.from(due).map(k => STATE.groups[k]).filter(Boolean);
 }
 
-/* ---------- Card daily progression ---------- */
+/* ---------- Day rollover ---------- */
 function bumpCardLevelsForNewDay(prevDayKey, todayKey){
   if (STATE.meta.lastAttendanceDateKey !== prevDayKey) return;
 
@@ -349,28 +391,8 @@ function bumpCardLevelsForNewDay(prevDayKey, todayKey){
   });
 }
 
-/* ---------- Add lock ---------- */
-function addLockActiveToday(){
-  const today = getTodayGroupKey();
-  return STATE.meta.addLockDateKey === today && todayCount() < MIN_DAILY_FIRST;
-}
-function setAddLockIfNeeded(){
-  const today = getTodayGroupKey();
-  if (todayCount() >= MIN_DAILY_FIRST) {
-    STATE.meta.addLockDateKey = null;
-    return;
-  }
-  STATE.meta.addLockDateKey = today;
-}
-function clearAddInputs(){
-  $("#inFront").value = "";
-  $("#inBack").value = "";
-  $("#inHint").value = "";
-}
-
-/* ---------- Day rollover ---------- */
 function ensureDayRollover() {
-  const today = safeTodayKey(STATE);
+  const today = safeTodayKey();
   const prev = STATE.inventory.dateKey;
 
   if (today !== prev) {
@@ -406,6 +428,8 @@ function ensureDayRollover() {
     STATE.inventory.extraCardsUsed = 0;
     STATE.meta.addLockDateKey = null;
   }
+
+  scheduleSave("day rollover");
 }
 
 /* ---------- Rank update ---------- */
@@ -447,12 +471,12 @@ function refreshHUD() {
   $("#todayLabel").textContent = `مجموعة اليوم: ${g.name}`;
   $("#goldLabel").textContent = STATE.wallet.gold;
 
-  $("#userLabel").textContent = USER_NAME || "—";
-
   const acc = accountLevelFromXP(STATE.wallet.xp);
   $("#xpLabel").textContent = `LV ${acc.level}`;
   $("#rankLabel").textContent = `${TIERS[STATE.rank.tierIndex]} ${STATE.rank.subLevel}`;
   $("#streakLabel").textContent = STATE.meta.streak;
+
+  $("#userNameLabel").textContent = USER?.displayName || "حساب";
 
   const xpPct = Math.max(0, Math.min(100, ((STATE.wallet.xp - acc.curMinXP) / Math.max(1, (acc.nextMinXP - acc.curMinXP))) * 100));
   $("#xpBar").style.width = `${xpPct.toFixed(1)}%`;
@@ -475,9 +499,7 @@ function refreshHUD() {
   const invExtra = Math.max(0, STATE.inventory.extraCardsBought - STATE.inventory.extraCardsUsed);
   $("#invLine").textContent = `إضافي اليوم: ${invExtra} | تخطي: ${STATE.inventory.skip} | مساعدة: ${STATE.inventory.help} | وقود: ${STATE.inventory.fuel || 0}`;
 
-  const cap = todayCapacity();
-  const cnt = todayCount();
-  $("#addHint").textContent = `بطاقات اليوم: ${cnt} / ${cap} | أول إضافة: لا خروج قبل ${MIN_DAILY_FIRST} أو حذف وخروج.`;
+  $("#addHint").textContent = `بطاقات اليوم: ${todayCount()} / ${todayCapacity()} | أول إضافة: لا خروج قبل ${MIN_DAILY_FIRST} أو حذف وخروج.`;
   $("#addStats").textContent = STATE.meta.lastActivity || "—";
 }
 
@@ -562,7 +584,7 @@ function refreshCardsList(filter="") {
           if (ignored) delete STATE.ignoreList[c.id];
           else STATE.ignoreList[c.id] = true;
           STATE.meta.lastActivity = "تم تحديث قائمة التجاهل.";
-          cloudSaveDebounced();
+          scheduleSave("ignore toggle");
           closeModal();
           refreshHUD();
           refreshCardsList($("#cardsSearch").value);
@@ -596,6 +618,25 @@ const HELP_TEXTS = {
   hintHelp: "أدخل تلميحًا يساعد التذكر (رمز/إيموجي/وصف). الحقل إلزامي. حد 60 حرف."
 };
 
+/* ---------- Add lock ---------- */
+function addLockActiveToday(){
+  const today = getTodayGroupKey();
+  return STATE.meta.addLockDateKey === today && todayCount() < MIN_DAILY_FIRST;
+}
+function setAddLockIfNeeded(){
+  const today = getTodayGroupKey();
+  if (todayCount() >= MIN_DAILY_FIRST) {
+    STATE.meta.addLockDateKey = null;
+    return;
+  }
+  STATE.meta.addLockDateKey = today;
+}
+function clearAddInputs(){
+  $("#inFront").value = "";
+  $("#inBack").value = "";
+  $("#inHint").value = "";
+}
+
 /* ---------- Add flow ---------- */
 function canExitAddView() {
   return !addLockActiveToday();
@@ -610,7 +651,7 @@ function deleteTodayProgressAndExit() {
   clearAddInputs();
   STATE.meta.addLockDateKey = null;
   STATE.meta.lastActivity = "تم حذف إضافة اليوم غير المكتملة.";
-  cloudSaveDebounced();
+  scheduleSave("delete today add");
   closeModal();
   showView("home");
 }
@@ -627,7 +668,7 @@ function setLockOnAnyInput(){
   const c = $("#inHint").value.trim();
   if (a || b || c) {
     setAddLockIfNeeded();
-    cloudSaveDebounced();
+    scheduleSave("add lock");
   }
 }
 function saveNewCard() {
@@ -683,17 +724,17 @@ function saveNewCard() {
   if (g.cardIds.length >= MIN_DAILY_FIRST) STATE.meta.addLockDateKey = null;
 
   STATE.meta.lastActivity = `تمت إضافة بطاقة جديدة إلى مجموعة ${g.name}.`;
+  scheduleSave("add card");
+
   clearAddInputs();
   AudioFX.beep("ok");
-
-  cloudSaveDebounced();
   refreshHUD();
   refreshTodayList();
 }
 
 /* ---------- Overdue modal (mandatory) ---------- */
 function checkOverdueModal() {
-  const today = safeTodayKey(STATE);
+  const today = safeTodayKey();
   const dueGroups = dueGroupsToday();
   if (dueGroups.length === 0) return;
 
@@ -747,7 +788,7 @@ function checkOverdueModal() {
 
     STATE.meta._resolvedDueTodayKey = today;
     STATE.meta.lastActivity = "تم تحديد إجراء للمجموعات المستحقة.";
-    cloudSaveDebounced();
+    scheduleSave("resolve overdue");
     closeModal();
     refreshHUD();
   });
@@ -832,9 +873,6 @@ function startLesson() {
   showView("game");
   $("#btnNextGame").style.display = "";
   $("#btnGoHint").style.display = "";
-  $("#btnUseSkip").style.display = "";
-  $("#btnUseHelp").style.display = "";
-  $("#btnHelpLog").style.display = "";
 
   updateHUD();
   startTimer();
@@ -924,7 +962,7 @@ function gameSubtitle(k) {
     matching: "اختر نصًا ثم ترجمته. الصحيح يختفي، والخطأ يسمح بإعادة بلا حدود.",
     flip: "تذكر أماكن النص والترجمة. عرض 5 ثوانٍ ثم قلب.",
     scrambled: "رتب أحرف النص الصحيح. 30% من بطاقات اليوم.",
-    typing: "اكتب النص الأصلي عند رؤية الترجمة. 30% مختلفة عن ترتيب الحروف.",
+    typing: "اكتب النص الأصلي عند رؤية الترجمة. لا يفرق بين كبير/صغير ويتجاهل الفراغات قبل/بعد.",
     hint: "التقييم إلزامي لتسجيل الحضور."
   }[k] || "");
 }
@@ -950,7 +988,7 @@ function renderGame(gameKey) {
         STATE.inventory.skip -= 1;
         applyPerfectGameRewards();
         PLAY.playedGames.push(gameKey);
-        cloudSaveDebounced();
+        scheduleSave("use skip");
         afterGameFinished(gameKey);
       })
     ]);
@@ -962,7 +1000,7 @@ function renderGame(gameKey) {
 
     STATE.inventory.help -= 1;
     PLAY.usedHelpInGame = true;
-    cloudSaveDebounced();
+    scheduleSave("use help");
 
     if (gameKey === "matching") matchingHelp();
     if (gameKey === "flip") flipHelp();
@@ -980,31 +1018,6 @@ function renderGame(gameKey) {
   if (gameKey === "scrambled") gameScrambled();
   if (gameKey === "typing") gameTyping();
   if (gameKey === "hint") gameHint();
-}
-
-/* ---------- Visual helpers ---------- */
-function popEl(el){
-  if (!el) return;
-  el.classList.remove("pop");
-  void el.offsetWidth;
-  el.classList.add("pop");
-}
-function shakeEl(el){
-  if (!el) return;
-  el.classList.remove("shake");
-  void el.offsetWidth;
-  el.classList.add("shake");
-}
-function sparkEl(el){
-  if (!el) return;
-  let sp = el.querySelector(".spark");
-  if (!sp){
-    sp = document.createElement("div");
-    sp.className = "spark";
-    el.appendChild(sp);
-  }
-  sp.classList.add("on");
-  setTimeout(()=>sp.classList.remove("on"), 230);
 }
 
 /* ---------- Scoring ---------- */
@@ -1086,7 +1099,6 @@ function matchingClick(t, el) {
   if (!MATCH.selected) {
     MATCH.selected = { ...t, el };
     el.classList.add("sel");
-    popEl(el);
     return;
   }
 
@@ -1104,6 +1116,8 @@ function matchingClick(t, el) {
     MATCH.gone.add(t.id);
     first.el.classList.add("gone");
     el.classList.add("gone");
+    fx(first.el, "fx-pop");
+    fx(el, "fx-pop");
     MATCH.correct++;
 
     awardOnCorrect(12, 6, dt, Math.max(first.level, t.level));
@@ -1112,14 +1126,14 @@ function matchingClick(t, el) {
     MATCH.goldRaw += (3 * F * L);
 
     AudioFX.beep("ok");
-    sparkEl(first.el); sparkEl(el);
 
     if (MATCH.correct >= PLAY.cards.length) finishMatching();
   } else {
     MATCH.errors++;
     awardOnWrong(2, 8, Math.max(first.level, t.level), errorFactorFromErrors(MATCH.errors));
+    fx(first.el, "fx-shake");
+    fx(el, "fx-shake");
     AudioFX.beep("bad");
-    shakeEl(first.el); shakeEl(el);
   }
 
   updateHUD();
@@ -1207,7 +1221,7 @@ function flipClick(t, el) {
   AudioFX.beep("click");
   el.classList.remove("back");
   el.textContent = t.text;
-  popEl(el);
+  fx(el, "fx-pop");
   FLIP.open.push({t, el});
 
   if (FLIP.open.length === 2) {
@@ -1238,7 +1252,6 @@ function flipClick(t, el) {
         FLIP.goldRaw += (3.5 * F * L);
 
         AudioFX.beep("ok");
-        sparkEl(a.el); sparkEl(b.el);
         updateHUD();
 
         if (FLIP.pairs >= PLAY.cards.length) finishFlip();
@@ -1247,7 +1260,8 @@ function flipClick(t, el) {
       setTimeout(() => {
         a.el.classList.add("back"); a.el.textContent = "✦";
         b.el.classList.add("back"); b.el.textContent = "✦";
-        shakeEl(a.el); shakeEl(b.el);
+        fx(a.el, "fx-shake");
+        fx(b.el, "fx-shake");
         FLIP.open = [];
         FLIP.locked = false;
         AudioFX.beep("bad");
@@ -1280,7 +1294,7 @@ let SCR = null;
 function gameScrambled() {
   const ids = PLAY.scrambledIds;
   const cards = ids.map(id => STATE.cards[id]).filter(Boolean);
-  SCR = { cards, idx: 0, errors: 0, correct: 0, goldRaw: 0, lastAt: performance.now(), answer: "", stack: [], longPressTimer:null };
+  SCR = { cards, idx: 0, errors: 0, correct: 0, goldRaw: 0, lastAt: performance.now(), answer: "", stack: [] };
   renderScrambledCard();
 }
 
@@ -1305,9 +1319,9 @@ function renderScrambledCard() {
     <div class="lettersRow" id="scrLetters"></div>
     <div class="rowActions" style="margin-top:12px">
       <button class="btn btn--primary" id="scrOk"><span class="material-icons">check</span> موافق</button>
-      <button class="btn" id="scrDel"><span class="material-icons">backspace</span> حذف</button>
+      <button class="btn" id="scrClear"><span class="material-icons">backspace</span> حذف</button>
     </div>
-    <div class="muted tiny">ضغطة قصيرة: حذف آخر حرف. ضغطة مطوّلة: مسح الكل.</div>
+    <div class="muted tiny">ضغطة: حذف آخر حرف — ضغطة مطوّلة: حذف الكل</div>
   `;
   area.appendChild(box);
 
@@ -1321,52 +1335,53 @@ function renderScrambledCard() {
     b.textContent = ch === " " ? "␠" : ch;
     b.onclick = () => {
       SCR.answer += ch;
+      SCR.stack.push({ ch, btn: b });
       ansEl.textContent = SCR.answer;
       b.disabled = true;
-      SCR.stack.push(b);
       AudioFX.beep("click");
+      fx(ansEl, "fx-pop");
     };
     lettersEl.appendChild(b);
   });
 
-  function clearAll(){
-    SCR.answer = "";
-    ansEl.textContent = "";
-    lettersEl.querySelectorAll("button").forEach(b => b.disabled = false);
-    SCR.stack = [];
-    AudioFX.beep("click");
-  }
-  function delOne(){
-    if (!SCR.answer.length) return;
+  // delete last vs long press clear all
+  let pressT = null;
+  const clearBtn = $("#scrClear");
+
+  function deleteLast(){
+    if (!SCR.stack.length) return;
+    const last = SCR.stack.pop();
+    if (last?.btn) last.btn.disabled = false;
     SCR.answer = SCR.answer.slice(0, -1);
     ansEl.textContent = SCR.answer;
-    const lastBtn = SCR.stack.pop();
-    if (lastBtn) lastBtn.disabled = false;
     AudioFX.beep("click");
+    fx(ansEl, "fx-pop");
+  }
+  function clearAll(){
+    SCR.stack.forEach(x => { if (x?.btn) x.btn.disabled = false; });
+    SCR.stack = [];
+    SCR.answer = "";
+    ansEl.textContent = "";
+    AudioFX.beep("click");
+    fx(ansEl, "fx-glow");
   }
 
-  const delBtn = $("#scrDel");
-  // short click = delete last
-  delBtn.onclick = (e) => {
-    if (SCR._longPressed) { SCR._longPressed = false; return; }
-    delOne();
-  };
-  // long press = clear all
-  const startLP = () => {
-    SCR._longPressed = false;
-    SCR.longPressTimer = setTimeout(() => {
-      SCR._longPressed = true;
+  clearBtn.addEventListener("pointerdown", () => {
+    pressT = setTimeout(() => {
+      pressT = null;
       clearAll();
     }, 520);
-  };
-  const endLP = () => {
-    if (SCR.longPressTimer) clearTimeout(SCR.longPressTimer);
-    SCR.longPressTimer = null;
-  };
-  delBtn.addEventListener("pointerdown", startLP);
-  delBtn.addEventListener("pointerup", endLP);
-  delBtn.addEventListener("pointerleave", endLP);
-  delBtn.addEventListener("pointercancel", endLP);
+  });
+  clearBtn.addEventListener("pointerup", () => {
+    if (pressT) {
+      clearTimeout(pressT);
+      pressT = null;
+      deleteLast();
+    }
+  });
+  clearBtn.addEventListener("pointerleave", () => {
+    if (pressT) { clearTimeout(pressT); pressT = null; }
+  });
 
   $("#scrOk").onclick = () => {
     const dt = (performance.now() - SCR.lastAt)/1000;
@@ -1380,7 +1395,6 @@ function renderScrambledCard() {
       SCR.goldRaw += (4 * F * L);
 
       AudioFX.beep("ok");
-      sparkEl(box);
       updateHUD();
       SCR.idx++;
       renderScrambledCard();
@@ -1388,7 +1402,7 @@ function renderScrambledCard() {
       SCR.errors++;
       awardOnWrong(2, 9, c.level, errorFactorFromErrors(SCR.errors));
       AudioFX.beep("bad");
-      shakeEl(box);
+      fx($("#scrAnswer"), "fx-shake");
       updateHUD();
       openModal("غير صحيح", "الترتيب غير صحيح. حاول مرة أخرى.", [
         makeBtn("حسنًا","btn btn--primary", closeModal)
@@ -1419,10 +1433,6 @@ function finishScrambled() {
 /* ---------- Typing ---------- */
 let TYP = null;
 
-function normalizeTyping(s){
-  return String(s ?? "").trim().toLowerCase(); // تجاهل فراغات قبل/بعد + تجاهل حالة الأحرف
-}
-
 function gameTyping() {
   const ids = PLAY.typingIds;
   const cards = ids.map(id => STATE.cards[id]).filter(Boolean);
@@ -1446,7 +1456,7 @@ function renderTypingCard() {
     <div class="typingBox">
       <div class="muted" style="font-weight:900">اكتب النص الأصلي</div>
       <input id="typeIn" placeholder="اكتب هنا..." />
-      <div class="muted tiny">لا يتم التفريق بين الأحرف الكبيرة والصغيرة، ويتم تجاهل الفراغات في البداية والنهاية.</div>
+      <div class="muted tiny">لا يفرق بين كبير/صغير ويتجاهل الفراغات قبل/بعد.</div>
     </div>
     <div class="rowActions" style="margin-top:12px">
       <button class="btn btn--primary" id="typeOk"><span class="material-icons">check</span> موافق</button>
@@ -1461,8 +1471,8 @@ function renderTypingCard() {
     const dt = (performance.now() - TYP.lastAt)/1000;
     TYP.lastAt = performance.now();
 
-    const v = normalizeTyping(input.value);
-    const target = normalizeTyping(c.foreign);
+    const v = normText(input.value);
+    const target = normText(c.foreign);
 
     if (v === target) {
       TYP.correct++;
@@ -1472,7 +1482,7 @@ function renderTypingCard() {
       TYP.goldRaw += (5 * F * L);
 
       AudioFX.beep("ok");
-      sparkEl(box);
+      fx(input, "fx-glow");
       updateHUD();
       TYP.idx++;
       renderTypingCard();
@@ -1480,7 +1490,7 @@ function renderTypingCard() {
       TYP.errors++;
       awardOnWrong(2, 10, c.level, errorFactorFromErrors(TYP.errors));
       AudioFX.beep("bad");
-      shakeEl(box);
+      fx(input, "fx-shake");
       updateHUD();
       openModal("غير صحيح", "المحتوى غير صحيح. حاول مرة أخرى.", [
         makeBtn("حسنًا","btn btn--primary", closeModal)
@@ -1588,9 +1598,8 @@ function typingHelp() {
   if (!c) return;
   const input = $("#typeIn");
   if (!input) return;
-  const typed = normalizeTyping(input.value);
-  const target = normalizeTyping(c.foreign);
-  const next = target.charAt(typed.length);
+  const typed = input.value;
+  const next = c.foreign.charAt(typed.length);
   logHelp("typing", `الحرف التالي: ${next || "(لا يوجد)"}`);
   openModal("مساعدة", `الحرف التالي: <b>${escapeHTML(next || "")}</b>`, [
     makeBtn("حسنًا","btn btn--primary", closeModal)
@@ -1602,29 +1611,21 @@ function afterGameFinished(gameKey) {
   const done4 = ["matching","flip","scrambled","typing"].every(g => PLAY.playedGames.includes(g));
   if (done4) $("#btnNextGame").style.display = "none";
 
-  // إصلاح جذري: لا تعرض زر "اللعبة التالية" في النافذة إذا انتهت الأربع
-  const buttons = [];
-  if (!done4) {
-    buttons.push(
-      makeBtn(`<span class="material-icons">sports_esports</span> اللعبة التالية`, "btn btn--primary", () => {
-        closeModal();
-        launchNextGame();
-      })
-    );
-  }
-  buttons.push(
+  openModal("تم إنهاء اللعبة", `
+    <div class="modalRow">
+      <div class="muted">اللعبة: <b>${escapeHTML(gameTitle(gameKey))}</b></div>
+      <div class="muted" style="margin-top:8px">اختر اللعبة التالية أو انتقل إلى تقييم البطاقات.</div>
+    </div>
+  `, [
+    makeBtn(`<span class="material-icons">sports_esports</span> اللعبة التالية`, "btn btn--primary", () => {
+      closeModal();
+      if (!done4) launchNextGame();
+    }),
     makeBtn(`<span class="material-icons">task_alt</span> تقييم البطاقات`, "btn btn--primary", () => {
       closeModal();
       goToHint();
     })
-  );
-
-  openModal("تم إنهاء اللعبة", `
-    <div class="modalRow">
-      <div class="muted">اللعبة: <b>${escapeHTML(gameTitle(gameKey))}</b></div>
-      <div class="muted" style="margin-top:8px">يمكنك الانتقال للتقييم، أو متابعة لعبة أخرى إذا كانت متبقية.</div>
-    </div>
-  `, buttons);
+  ]);
 }
 
 /* ---------- Hint ---------- */
@@ -1703,7 +1704,7 @@ function rateHint(cardId, evalText) {
 
   PLAY.hintIndex++;
   AudioFX.beep("ok");
-  cloudSaveDebounced();
+  scheduleSave("hint eval");
   renderHintCard();
 }
 
@@ -1714,12 +1715,12 @@ function finishHintAll() {
   STATE.wallet.xp += PLAY.xpDelta;
   applyRatingDelta(PLAY.ratingDelta);
 
-  const today = safeTodayKey(STATE);
+  const today = safeTodayKey();
   if (STATE.meta.lastAttendanceDateKey !== today) STATE.meta.streak += 1;
   STATE.meta.lastAttendanceDateKey = today;
 
   STATE.meta.lastActivity = `تم تسجيل حضور اليوم. ربح: ذهب ${PLAY.goldDelta}, XP ${PLAY.xpDelta}, تقييم ${PLAY.ratingDelta}.`;
-  cloudSaveDebounced();
+  scheduleSave("finish hint");
 
   AudioFX.beep("coin");
   AudioFX.beep("rank");
@@ -1758,7 +1759,7 @@ function handleAbortLesson() {
   if (PLAY && !PLAY.completedHintAll) {
     cancelLesson();
     STATE.meta.lastActivity = "تم إلغاء الدرس لعدم إكمال تقييم البطاقات.";
-    cloudSaveDebounced();
+    scheduleSave("abort lesson");
   }
   endPlay(true);
 }
@@ -1782,7 +1783,7 @@ function buyExtraCard() {
   STATE.wallet.gold -= 100;
   STATE.inventory.extraCardsBought += 1;
   STATE.meta.lastActivity = "تم شراء بطاقة إضافية لليوم.";
-  cloudSaveDebounced();
+  scheduleSave("buy extra");
   AudioFX.beep("coin");
   refreshHUD();
 }
@@ -1797,7 +1798,7 @@ function buySkip() {
   STATE.wallet.gold -= 900;
   STATE.inventory.skip += 1;
   STATE.meta.lastActivity = "تم شراء تخطي.";
-  cloudSaveDebounced();
+  scheduleSave("buy skip");
   AudioFX.beep("coin");
   refreshHUD();
 }
@@ -1812,7 +1813,7 @@ function buyHelp() {
   STATE.wallet.gold -= 150;
   STATE.inventory.help += 1;
   STATE.meta.lastActivity = "تم شراء مساعدة.";
-  cloudSaveDebounced();
+  scheduleSave("buy help");
   AudioFX.beep("coin");
   refreshHUD();
 }
@@ -1827,7 +1828,7 @@ function buyFuel() {
   STATE.wallet.gold -= 250;
   STATE.inventory.fuel = (STATE.inventory.fuel || 0) + 1;
   STATE.meta.lastActivity = "تم شراء وقود.";
-  cloudSaveDebounced();
+  scheduleSave("buy fuel");
   AudioFX.beep("coin");
   refreshHUD();
 }
@@ -1859,14 +1860,14 @@ function exportJSON() {
 }
 function importJSON(file) {
   const reader = new FileReader();
-  reader.onload = async () => {
+  reader.onload = () => {
     try{
       const obj = JSON.parse(reader.result);
       if (!obj.wallet || !obj.cards || !obj.groups) throw new Error("invalid");
-      STATE = migrateState(obj);
-      ensureDayRollover();
+      STATE = obj;
+      STATE.meta.lastActivity = "تم استيراد نسخة احتياطية.";
+      scheduleSave("import json");
       refreshAll();
-      await cloudSaveNow();
       AudioFX.beep("ok");
       openModal("تم", "تم الاستيراد بنجاح.", [
         makeBtn("إغلاق","btn btn--primary", closeModal)
@@ -1881,132 +1882,224 @@ function importJSON(file) {
   reader.readAsText(file);
 }
 
-/* ---------- Before unload rules ---------- */
-function enforceAddLockOnUnload() {
-  window.addEventListener("beforeunload", () => {
-    if (addLockActiveToday()) {
-      const key = getTodayGroupKey();
-      const g = STATE.groups[key];
-      if (g) {
-        g.cardIds.forEach(id => { delete STATE.cards[id]; delete STATE.ignoreList[id]; });
-        g.cardIds = [];
-      }
-      STATE.meta.addLockDateKey = null;
-      STATE.meta.lastActivity = "تم حذف إضافة اليوم غير المكتملة بسبب الخروج قبل 4 بطاقات.";
-      // حفظ سريع
-      navigator.sendBeacon?.("", "");
-    }
-    if (PLAY && !PLAY.completedHintAll) {
-      cancelLesson();
-      STATE.meta.lastActivity = "تم إلغاء الدرس لعدم إكمال تقييم البطاقات.";
-    }
-    // محاولة حفظ أخيرة
-    try{ cloudSaveNow(); }catch{}
-  });
-}
-
-/* ---------- Account pill (logout/delete) ---------- */
-async function doLogout(){
-  try{ await signOut(auth); }catch{}
-  location.href = "index.html";
-}
-
-async function doDeleteAccountFlow(){
-  openModal("حذف الحساب", `
+/* ---------- Account menu (logout/delete) ---------- */
+function openAccountMenu(){
+  openModal("الحساب", `
     <div class="modalRow">
-      <div style="font-weight:900">هل تريد حذف الحساب فعلًا؟</div>
-      <div class="muted" style="margin-top:6px">سيتم حذف الحساب من السيرفر.</div>
+      <div style="font-weight:900">${escapeHTML(USER?.displayName || "حساب")}</div>
+      <div class="muted" style="margin-top:6px">${escapeHTML(USER?.email || "")}</div>
+      <div class="divider"></div>
+      <div class="muted">تسجيل الخروج سيُبقي بياناتك محفوظة على السيرفر.</div>
+      <div class="muted tiny">زر حذف الحساب موجود بالأسفل.</div>
     </div>
   `, [
-    makeBtn("إلغاء","btn", closeModal),
-    makeBtn("متابعة","btn btn--danger", () => {
+    makeBtn(`<span class="material-icons">logout</span> تسجيل الخروج`, "btn btn--primary", async ()=>{
       closeModal();
-      openModal("تأكيد نهائي", `
-        <div class="modalRow">
-          <div style="font-weight:900">تأكيد نهائي</div>
-          <div class="muted" style="margin-top:6px">ستفقد جميع بياناتك ولن يمكن استرجاعها.</div>
-        </div>
-      `, [
-        makeBtn("إلغاء","btn", closeModal),
-        makeBtn("حذف نهائي","btn btn--danger", async () => {
-          closeModal();
-          await reallyDeleteAccount();
-        })
-      ], { closable:false });
-    })
+      await signOut(AUTH);
+    }),
+    makeBtn(`حذف الحساب`, "btn btn--ghost", ()=>{
+      closeModal();
+      confirmDeleteAccount1();
+    }),
+    makeBtn(`إغلاق`, "btn", closeModal)
   ]);
 }
 
-async function reallyDeleteAccount(){
-  const user = auth.currentUser;
-  if (!user) return;
-
-  try{
-    // حذف بيانات التطبيق + ملف المستخدم
-    await deleteDoc(cloudRef()).catch(()=>{});
-    await deleteDoc(profileRef()).catch(()=>{});
-
-    // حذف الحساب
-    await deleteUser(user);
-    location.href = "index.html";
-  }catch(e){
-    // يحتاج إعادة توثيق أحيانًا
-    if (String(e?.code || "").includes("auth/requires-recent-login")) {
-      await reauthAndRetryDelete(user);
-    } else {
-      openModal("فشل", "تعذر حذف الحساب حاليًا.", [
-        makeBtn("إغلاق","btn btn--primary", closeModal)
-      ]);
-    }
-  }
-}
-
-async function reauthAndRetryDelete(user){
-  // لو Google: reauth popup — لو password: اطلب كلمة المرور
-  const isGoogle = user.providerData?.some(p => p.providerId === "google.com");
-  if (isGoogle) {
-    try{
-      await reauthenticateWithPopup(user, new GoogleAuthProvider());
-      await reallyDeleteAccount();
-      return;
-    }catch{
-      openModal("فشل", "تعذر إعادة توثيق الحساب عبر Google.", [
-        makeBtn("إغلاق","btn btn--primary", closeModal)
-      ]);
-      return;
-    }
-  }
-
-  openModal("تأكيد الهوية", `
+function confirmDeleteAccount1(){
+  openModal("تأكيد", `
     <div class="modalRow">
-      <div style="font-weight:900">أدخل كلمة المرور لإتمام حذف الحساب</div>
-      <div class="field" style="margin-top:10px">
-        <label>كلمة المرور</label>
-        <input id="reauthPass" type="password" placeholder="••••••••" style="width:100%;margin-top:10px" />
-      </div>
+      <div style="font-weight:900">هل تريد حذف حسابك؟</div>
+      <div class="muted" style="margin-top:6px">هذا الإجراء لا يمكن التراجع عنه.</div>
     </div>
   `, [
     makeBtn("إلغاء","btn", closeModal),
-    makeBtn("تأكيد","btn btn--primary", async () => {
-      const p = (document.querySelector("#reauthPass")?.value || "");
-      if (!p) return;
+    makeBtn("متابعة","btn btn--danger", ()=>{
+      closeModal();
+      confirmDeleteAccount2();
+    })
+  ], {closable:false});
+}
+function confirmDeleteAccount2(){
+  openModal("تأكيد نهائي", `
+    <div class="modalRow">
+      <div style="font-weight:900">ستفقد جميع بياناتك نهائيًا.</div>
+      <div class="muted" style="margin-top:6px">سيتم حذف التقدم والبطاقات من السيرفر بالكامل.</div>
+    </div>
+  `, [
+    makeBtn("إلغاء","btn", closeModal),
+    makeBtn("حذف نهائي","btn btn--danger", async ()=>{
       try{
-        const cred = EmailAuthProvider.credential(user.email, p);
-        await reauthenticateWithCredential(user, cred);
+        // delete cloud data first
+        if (STATE_REF) await deleteDoc(STATE_REF);
+        // delete auth user
+        await deleteUser(AUTH.currentUser);
         closeModal();
-        await reallyDeleteAccount();
-      }catch{
+      }catch(e){
         closeModal();
-        openModal("فشل", "كلمة المرور غير صحيحة أو تعذر التحقق.", [
-          makeBtn("إغلاق","btn btn--primary", closeModal)
-        ]);
+        const code = e?.code || "";
+        let msg = "فشل حذف الحساب.";
+        if (code.includes("requires-recent-login")) {
+          msg = "لا يمكن حذف الحساب الآن. سجّل خروج ثم سجّل دخول من جديد، وبعدها حاول حذف الحساب.";
+        }
+        openModal("خطأ", msg, [makeBtn("إغلاق","btn btn--primary", closeModal)]);
       }
     })
-  ], { closable:false });
+  ], {closable:false});
+}
+
+/* ---------- AUTH actions ---------- */
+function setAuthMsg(id, text){
+  const el = $(id);
+  if (el) el.textContent = text;
+}
+
+async function doLogin(){
+  try{
+    setAuthMsg("#loginMsg", "جاري تسجيل الدخول...");
+    const email = $("#loginEmail").value.trim();
+    const pw = $("#loginPass").value;
+    await signInWithEmailAndPassword(AUTH, email, pw);
+    AudioFX.beep("ok");
+  }catch(e){
+    const code = e?.code || "";
+    setAuthMsg("#loginMsg", `فشل تسجيل الدخول: ${code}`);
+    AudioFX.beep("bad");
+  }
+}
+
+async function doRegister(){
+  const name = $("#regName").value.trim();
+  const email = $("#regEmail").value.trim();
+  const pw1 = $("#regPass").value;
+  const pw2 = $("#regPass2").value;
+
+  if (!name) { setAuthMsg("#regMsg","الاسم إلزامي."); AudioFX.beep("bad"); return; }
+  if (!email) { setAuthMsg("#regMsg","الإيميل إلزامي."); AudioFX.beep("bad"); return; }
+  if (pw1 !== pw2) { setAuthMsg("#regMsg","كلمتا المرور غير متطابقتين."); AudioFX.beep("bad"); return; }
+
+  const pwErr = validatePassword(pw1);
+  if (pwErr) { setAuthMsg("#regMsg", pwErr); AudioFX.beep("bad"); return; }
+
+  try{
+    setAuthMsg("#regMsg", "جاري إنشاء الحساب...");
+    const cred = await createUserWithEmailAndPassword(AUTH, email, pw1);
+    await updateProfile(cred.user, { displayName: name });
+    await sendEmailVerification(cred.user);
+
+    setAuthMsg("#regMsg", "تم إنشاء الحساب. تم إرسال رسالة تفعيل إلى بريدك. فعّل الحساب ثم سجّل دخول.");
+    AudioFX.beep("ok");
+
+    // منع الاستخدام قبل التفعيل: نخرج المستخدم فوراً
+    await signOut(AUTH);
+  }catch(e){
+    const code = e?.code || "";
+    setAuthMsg("#regMsg", `فشل إنشاء الحساب: ${code}`);
+    AudioFX.beep("bad");
+  }
+}
+
+async function doGoogle(){
+  try{
+    setAuthMsg("#loginMsg", "جاري فتح Google...");
+    const prov = new GoogleAuthProvider();
+    await signInWithPopup(AUTH, prov);
+    AudioFX.beep("ok");
+  }catch(e){
+    const code = e?.code || "";
+    setAuthMsg("#loginMsg", `فشل Google: ${code}`);
+    AudioFX.beep("bad");
+  }
+}
+
+async function doForgot(){
+  const email = $("#loginEmail").value.trim();
+  if (!email) {
+    openModal("تنبيه","اكتب بريدك الإلكتروني أولاً ثم اضغط نسيت كلمة المرور.",[
+      makeBtn("إغلاق","btn btn--primary", closeModal)
+    ]);
+    return;
+  }
+  try{
+    await sendPasswordResetEmail(AUTH, email);
+    openModal("تم","تم إرسال رابط تغيير كلمة المرور إلى بريدك.",[
+      makeBtn("إغلاق","btn btn--primary", closeModal)
+    ]);
+    AudioFX.beep("ok");
+  }catch(e){
+    openModal("خطأ", `فشل الإرسال: ${escapeHTML(e?.code || "")}`, [
+      makeBtn("إغلاق","btn btn--primary", closeModal)
+    ]);
+    AudioFX.beep("bad");
+  }
+}
+
+async function promptNameIfMissing(user){
+  if (user?.displayName && user.displayName.trim()) return true;
+
+  return new Promise((resolve) => {
+    openModal("أدخل اسمك", `
+      <div class="modalRow">
+        <div class="muted">لازم تكتب اسم حتى يظهر في التطبيق.</div>
+        <div class="divider"></div>
+        <div class="field">
+          <label>الاسم</label>
+          <input id="namePromptIn" maxlength="24" placeholder="اكتب اسمك" />
+          <div class="field__sub">يمكن تغييره لاحقًا بحذف الحساب فقط (حالياً).</div>
+        </div>
+      </div>
+    `, [
+      makeBtn("حفظ","btn btn--primary", async ()=>{
+        const nm = ($("#namePromptIn")?.value || "").trim();
+        if (!nm) { AudioFX.beep("bad"); return; }
+        try{
+          await updateProfile(user, { displayName: nm });
+          closeModal();
+          resolve(true);
+        }catch(e){
+          AudioFX.beep("bad");
+        }
+      })
+    ], {closable:false});
+  });
 }
 
 /* ---------- Wire UI ---------- */
 function wireUI() {
+  // Auth tabs
+  $$(".authTab").forEach(t => {
+    t.onclick = () => {
+      AudioFX.beep("click");
+      $$(".authTab").forEach(x => x.classList.remove("active"));
+      t.classList.add("active");
+      const k = t.getAttribute("data-auth-tab");
+      $$(".authBox").forEach(b => b.classList.remove("active"));
+      $(`#auth-${k}`).classList.add("active");
+    };
+  });
+
+  // Auth buttons
+  $("#btnLogin").onclick = () => { AudioFX.beep("click"); doLogin(); };
+  $("#btnRegister").onclick = () => { AudioFX.beep("click"); doRegister(); };
+  $("#btnGoogle").onclick = () => { AudioFX.beep("click"); doGoogle(); };
+  $("#btnForgot").onclick = () => { AudioFX.beep("click"); doForgot(); };
+
+  $("#btnResendVerify").onclick = async () => {
+    try{
+      const u = AUTH.currentUser;
+      if (!u) return;
+      await sendEmailVerification(u);
+      $("#verifyMsg").textContent = "تمت إعادة إرسال رسالة التفعيل.";
+      AudioFX.beep("ok");
+    }catch(e){
+      $("#verifyMsg").textContent = `فشل الإرسال: ${e?.code || ""}`;
+      AudioFX.beep("bad");
+    }
+  };
+  $("#btnLogoutFromVerify").onclick = async () => {
+    await signOut(AUTH);
+  };
+
+  // Nav
   $$(".nav__btn").forEach(b => {
     b.onclick = () => {
       AudioFX.beep("click");
@@ -2014,9 +2107,11 @@ function wireUI() {
     };
   });
 
+  // Home
   $("#btnStartPlay").onclick = () => { AudioFX.beep("click"); handleStartPlay(); };
   $("#btnQuickAdd").onclick = () => { AudioFX.beep("click"); showView("add"); };
 
+  // Add
   $("#btnSaveCard").onclick = () => { AudioFX.beep("click"); saveNewCard(); };
   $("#btnExitAdd").onclick = () => { AudioFX.beep("click"); confirmExitAddView(); };
 
@@ -2024,6 +2119,7 @@ function wireUI() {
     $(id).addEventListener("input", () => setLockOnAnyInput());
   });
 
+  // Store
   $("#view-store").addEventListener("click", (e) => {
     const btn = e.target.closest("button[data-buy]");
     if (!btn) return;
@@ -2035,6 +2131,7 @@ function wireUI() {
     if (k === "fuel") buyFuel();
   });
 
+  // Cards
   $("#cardsSearch").addEventListener("input", (e)=> refreshCardsList(e.target.value));
   $("#btnExport").onclick = () => { AudioFX.beep("click"); exportJSON(); };
   $("#importFile").addEventListener("change", (e)=> {
@@ -2043,10 +2140,12 @@ function wireUI() {
     e.target.value = "";
   });
 
+  // Game
   $("#btnAbortLesson").onclick = () => { AudioFX.beep("click"); handleAbortLesson(); };
   $("#btnNextGame").onclick = () => { AudioFX.beep("click"); launchNextGame(); };
   $("#btnGoHint").onclick = () => { AudioFX.beep("click"); goToHint(); };
 
+  // Help ? buttons
   $$(".qBtn").forEach(b => {
     b.onclick = () => {
       AudioFX.beep("click");
@@ -2057,23 +2156,8 @@ function wireUI() {
     };
   });
 
-  $("#userPill").onclick = () => {
-    openModal("الحساب", `
-      <div class="modalRow">
-        <div style="font-weight:900">${escapeHTML(USER_NAME || "لاعب")}</div>
-        <div class="muted" style="margin-top:6px">إدارة جلسة الحساب</div>
-      </div>
-    `, [
-      makeBtn(`<span class="material-icons">logout</span> تسجيل الخروج`, "btn btn--primary", async () => {
-        closeModal();
-        await doLogout();
-      }),
-      makeBtn(`<span class="material-icons">delete_forever</span> حذف الحساب`, "btn btn--ghost", async () => {
-        closeModal();
-        await doDeleteAccountFlow();
-      })
-    ]);
-  };
+  // Account pill
+  $("#userPill").onclick = () => { AudioFX.beep("click"); openAccountMenu(); };
 }
 
 /* ---------- Refresh all ---------- */
@@ -2083,55 +2167,85 @@ function refreshAll() {
   refreshHUD();
   refreshTodayList();
   refreshCardsList($("#cardsSearch")?.value || "");
-  cloudSaveDebounced();
 }
 
-/* ---------- Auth + Cloud init ---------- */
-async function startCloudSession(user){
-  UID = user.uid;
+/* ---------- Auth state gate ---------- */
+async function handleSignedIn(u){
+  USER = u;
 
-  // profile name
-  try{
-    const ps = await getDoc(profileRef());
-    USER_NAME = ps.exists() ? (ps.data()?.displayName || user.displayName || "لاعب") : (user.displayName || "لاعب");
-  }catch{
-    USER_NAME = user.displayName || "لاعب";
+  // enforce verification (email/password)
+  await reload(u);
+  if (!u.emailVerified && (u.providerData || []).some(p => p.providerId === "password")) {
+    showAuthGate();
+    $("#verifyBox").style.display = "";
+    $("#verifyMsg").textContent = "—";
+    $("#loginMsg").textContent = "سجّل الدخول بعد التفعيل.";
+    return;
   }
 
-  // snapshot listener (مزامنة لحظية بين الأجهزة)  [oai_citation:1‡Firebase](https://firebase.google.com/docs/firestore/query-data/get-data?utm_source=chatgpt.com)
-  if (unsubSnap) unsubSnap();
-  unsubSnap = onSnapshot(cloudRef(), async (snap) => {
-    syncFromCloud = true;
-    if (snap.exists() && snap.data()?.state) {
-      STATE = migrateState(snap.data().state);
-    } else {
-      STATE = defaultState();
-      await setDoc(cloudRef(), { state: STATE, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge: true });
-    }
-    syncFromCloud = false;
-    refreshAll();
-  });
+  $("#verifyBox").style.display = "none";
+
+  // if Google without displayName -> ask
+  const okName = await promptNameIfMissing(u);
+  if (!okName) return;
+
+  // load cloud state
+  STATE = await loadStateFromCloud(u.uid);
+
+  // ensure structures exist
+  if (!STATE.meta || !STATE.wallet || !STATE.rank || !STATE.inventory) {
+    STATE = defaultState();
+    await setDoc(doc(DB, "users", u.uid, "app", "state"), STATE, { merge:false });
+  }
+
+  showMainApp();
+  refreshAll();
+  checkOverdueModal();
+}
+
+function handleSignedOut(){
+  USER = null;
+  STATE = null;
+  STATE_REF = null;
+  showAuthGate();
 }
 
 /* ---------- Init ---------- */
 (function init() {
   wireUI();
-  enforceAddLockOnUnload();
+  showAuthGate();
 
-  onAuthStateChanged(auth, async (user) => {
-    if (!user) {
-      location.href = "index.html";
-      return;
+  onAuthStateChanged(AUTH, async (u) => {
+    if (!u) return handleSignedOut();
+    try{
+      await handleSignedIn(u);
+    }catch(e){
+      console.warn("auth init failed", e?.code || e);
+      showAuthGate();
+      setAuthMsg("#loginMsg", "فشل تحميل البيانات. حاول لاحقاً.");
     }
+  });
 
-    // إن كان password ولم يؤكد البريد: امنع الاستخدام
-    const isPass = user.providerData?.some(p => p.providerId === "password");
-    if (isPass && !user.emailVerified) {
-      await signOut(auth).catch(()=>{});
-      location.href = "index.html";
-      return;
+  // basic unload rule: if exit during lesson before hint => cancel rewards
+  window.addEventListener("beforeunload", () => {
+    if (STATE && addLockActiveToday()) {
+      const key = getTodayGroupKey();
+      const g = STATE.groups[key];
+      if (g) {
+        g.cardIds.forEach(id => { delete STATE.cards[id]; delete STATE.ignoreList[id]; });
+        g.cardIds = [];
+      }
+      STATE.meta.addLockDateKey = null;
+      STATE.meta.lastActivity = "تم حذف إضافة اليوم غير المكتملة بسبب الخروج قبل 4 بطاقات.";
+      // لا يمكن ضمان حفظ متزامن قبل الإغلاق، لكن نحاول
+      scheduleSave("unload add lock");
     }
-
-    await startCloudSession(user);
+    if (PLAY && !PLAY.completedHintAll) {
+      cancelLesson();
+      if (STATE) {
+        STATE.meta.lastActivity = "تم إلغاء الدرس لعدم إكمال تقييم البطاقات.";
+        scheduleSave("unload abort lesson");
+      }
+    }
   });
 })();
