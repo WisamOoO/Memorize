@@ -5,7 +5,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#070A12" />
-  <title>MemoQuest</title>
+  <title>Memorize Game</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -20,15 +20,20 @@
     <header class="hud">
       <div class="hud__left">
         <div class="brand">
-          <div class="brand__logo">MQ</div>
+          <div class="brand__logo">MG</div>
           <div class="brand__text">
-            <div class="brand__name">MemoQuest</div>
+            <div class="brand__name">Memorize Game</div>
             <div class="brand__sub" id="todayLabel">—</div>
           </div>
         </div>
       </div>
 
       <div class="hud__right">
+        <button class="pill pill--btn" id="btnAuth">
+          <span class="material-icons">account_circle</span>
+          <span id="userLabel">تسجيل الدخول</span>
+        </button>
+
         <div class="pill">
           <span class="material-icons">paid</span>
           <span id="goldLabel">0</span>
@@ -62,6 +67,9 @@
       <button class="nav__btn" data-view="cards">
         <span class="material-icons">style</span><span>البطاقات</span>
       </button>
+      <button class="nav__btn" data-view="account">
+        <span class="material-icons">account_circle</span><span>الحساب</span>
+      </button>
     </nav>
 
     <!-- Views -->
@@ -72,8 +80,8 @@
           <div class="hero__left">
             <h1>تعلّم مثل لعبة</h1>
             <p class="muted">
-              العب 4 ألعاب عشوائية ثم قيّم بالـ (تلميح) لتُسجّل حضور.
-              <br/>المكافآت تُعتمد فقط بعد إنهاء التلميح.
+              العب 4 ألعاب عشوائية ثم قيّم في لعبة التلميح لتُسجّل حضور.
+              <br/>المكافآت تُعتمد فقط بعد إنهاء التلميح بالكامل.
             </p>
 
             <div class="hero__actions">
@@ -131,6 +139,7 @@
                 <li>إذا سكّرت قبل التلميح: تُلغى مكافآت الألعاب الأربع.</li>
                 <li>إضافة اليوم: <b>4</b> بطاقات إلزامي لأول مرة، أقصى <b>10</b> + بطاقتين مشتريات.</li>
                 <li>أول مرة تفتح التطبيق: معك <b>900</b> ذهب.</li>
+                <li>البيانات تُحفظ على حسابك في السحابة.</li>
               </ul>
             </div>
           </div>
@@ -148,7 +157,7 @@
           <div class="formGrid">
             <div class="field">
               <label>
-                &amp; النص الأصلي
+                النص الأصلي
                 <button class="qBtn" type="button" data-help="foreignHelp">?</button>
               </label>
               <input id="inFront" maxlength="45" placeholder="مثال: apple" />
@@ -157,7 +166,7 @@
 
             <div class="field">
               <label>
-                $ الترجمة / المعنى
+                الترجمة / المعنى
                 <button class="qBtn" type="button" data-help="nativeHelp">?</button>
               </label>
               <input id="inBack" maxlength="45" placeholder="مثال: تفاحة" />
@@ -166,7 +175,7 @@
 
             <div class="field">
               <label>
-                # تلميح
+                تلميح
                 <button class="qBtn" type="button" data-help="hintHelp">?</button>
               </label>
               <input id="inHint" maxlength="60" placeholder="مثال: 🍎 أو (فاكهة)" />
@@ -281,6 +290,63 @@
         </div>
       </section>
 
+      <!-- ACCOUNT -->
+      <section class="view" id="view-account">
+        <div class="panel">
+          <div class="panel__head">
+            <h2>الحساب</h2>
+            <div class="muted" id="accSub">—</div>
+          </div>
+
+          <div class="divider"></div>
+
+          <div class="miniGrid" style="margin-top:0">
+            <div class="miniCard">
+              <div class="miniCard__title">دخول عبر Google</div>
+              <div class="miniCard__sub muted">الأفضل للمزامنة السريعة.</div>
+              <div style="margin-top:10px">
+                <button class="btn btn--primary" id="btnGoogleLogin">
+                  <span class="material-icons">login</span> دخول Google
+                </button>
+              </div>
+            </div>
+
+            <div class="miniCard">
+              <div class="miniCard__title">دخول بالإيميل</div>
+              <div class="miniCard__sub muted">دخول أو إنشاء حساب جديد.</div>
+              <div class="formGrid" style="grid-template-columns:1fr; margin-top:10px">
+                <div class="field">
+                  <label>الإيميل</label>
+                  <input id="accEmail" type="email" placeholder="name@example.com" />
+                </div>
+                <div class="field">
+                  <label>كلمة المرور</label>
+                  <input id="accPass" type="password" placeholder="••••••••" />
+                </div>
+              </div>
+              <div class="rowActions" style="margin-top:10px">
+                <button class="btn btn--primary" id="btnEmailLogin">
+                  <span class="material-icons">login</span> دخول
+                </button>
+                <button class="btn" id="btnEmailSignup">
+                  <span class="material-icons">person_add</span> إنشاء حساب
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+
+          <div class="rowActions">
+            <button class="btn btn--danger" id="btnLogout">
+              <span class="material-icons">logout</span> تسجيل خروج
+            </button>
+          </div>
+
+          <div class="muted tiny" id="cloudLine">—</div>
+        </div>
+      </section>
+
       <!-- GAME -->
       <section class="view" id="view-game">
         <div class="panel gamePanel">
@@ -355,6 +421,11 @@
 
   <!-- Modals -->
   <div class="modalHost" id="modalHost"></div>
+
+  <!-- Firebase (Compat) -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
 
   <script src="app.js"></script>
 </body>
