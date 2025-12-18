@@ -1,3 +1,4 @@
+
 /* app.js (Firebase + Firestore + AppCheck + Auth Gate) */
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
