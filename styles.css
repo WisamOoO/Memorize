@@ -1,4 +1,3 @@
-/* styles.css */
 :root{
   --bg0:#070A12;
   --bg1:#0B1022;
@@ -44,24 +43,25 @@ input, button, textarea { font: inherit; }
   min-height:100%;
   display:flex;
   flex-direction:column;
-}
-
-.hud, .nav, .views, .authGate{
   width: min(var(--maxw), 100%);
   margin-inline:auto;
+  padding: 14px calc(14px + var(--safe-right)) calc(14px + var(--safe-bottom)) calc(14px + var(--safe-left));
 }
 
 /* HUD */
+.hud, .nav, .views{ width: 100%; }
+
 .hud{
   display:flex;
   justify-content:space-between;
   align-items:center;
-  padding: calc(14px + var(--safe-top)) calc(14px + var(--safe-right)) 10px calc(14px + var(--safe-left));
+  padding: calc(14px + var(--safe-top)) 0 10px 0;
   gap: 10px;
   flex-wrap: wrap;
 }
 
 .brand{display:flex; align-items:center; gap:12px; min-width: 220px;}
+.brand--center{justify-content:center; width:100%}
 .brand__logo{
   width:44px; height:44px; border-radius:14px;
   background: linear-gradient(135deg, rgba(124,58,237,1), rgba(6,182,212,1));
@@ -71,9 +71,6 @@ input, button, textarea { font: inherit; }
 }
 .brand__name{font-weight:800; font-size:18px;}
 .brand__sub{font-size:12px; color:var(--muted); margin-top:2px;}
-
-.brand--auth .brand__logo{width:52px;height:52px;border-radius:16px}
-.brand--auth .brand__name{font-size:22px}
 
 .hud__right{
   display:flex;
@@ -93,15 +90,15 @@ input, button, textarea { font: inherit; }
   font-weight:600;
   white-space: nowrap;
 }
-.pill .material-icons{font-size:18px; opacity:.95;}
 .pill--click{cursor:pointer}
-.pill--click:hover{transform: translateY(-1px); background: rgba(255,255,255,.08);}
+.pill--click:hover{transform: translateY(-1px)}
+.pill .material-icons{font-size:18px; opacity:.95;}
 
 /* NAV */
 .nav{
   display:flex;
   gap:10px;
-  padding: 10px calc(14px + var(--safe-right)) 14px calc(14px + var(--safe-left));
+  padding: 10px 0 14px 0;
   position: sticky;
   top: 0;
   background: linear-gradient(180deg, rgba(7,10,18,.90), rgba(7,10,18,.45));
@@ -131,6 +128,7 @@ input, button, textarea { font: inherit; }
 }
 
 @media (max-width: 720px){
+  #app{padding-bottom: calc(110px + var(--safe-bottom));}
   .nav{
     position: fixed;
     top: auto;
@@ -150,20 +148,11 @@ input, button, textarea { font: inherit; }
     padding: 10px 10px;
     border-radius: 14px;
   }
-  .nav__btn span:last-child{
-    font-size: 12px;
-  }
+  .nav__btn span:last-child{ font-size: 12px; }
 }
 
 /* VIEWS */
-.views{
-  flex:1;
-  padding: 10px calc(14px + var(--safe-right)) calc(24px + var(--safe-bottom)) calc(14px + var(--safe-left));
-}
-@media (max-width: 720px){
-  .views{ padding-bottom: calc(110px + var(--safe-bottom)); }
-}
-
+.views{ flex:1; padding: 10px 0 24px 0; }
 .view{display:none;}
 .view.active{display:block;}
 
@@ -194,16 +183,7 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
   grid-template-columns: 1.3fr .7fr;
   gap:16px;
 }
-@media (max-width: 980px){
-  .hero{grid-template-columns: 1fr;}
-}
-
-.hero__actions{
-  display:flex;
-  gap:10px;
-  margin:14px 0 10px;
-  flex-wrap:wrap;
-}
+@media (max-width: 980px){ .hero{grid-template-columns: 1fr;} }
 
 .btn{
   border:1px solid var(--line);
@@ -218,6 +198,7 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
   gap:10px;
   transition: transform .15s ease, background .2s ease, border-color .2s ease, box-shadow .2s ease;
   max-width: 100%;
+  text-decoration:none;
 }
 .btn:hover{transform: translateY(-1px); background: rgba(255,255,255,.08);}
 .btn:active{transform: translateY(0px) scale(.99);}
@@ -239,15 +220,15 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
   margin:16px 0;
 }
 
+.hero__actions{display:flex;gap:10px;margin:14px 0 10px;flex-wrap:wrap;}
+
 .miniGrid{
   display:grid;
   grid-template-columns: repeat(2, minmax(0,1fr));
   gap:12px;
   margin-top:16px;
 }
-@media (max-width: 720px){
-  .miniGrid{grid-template-columns:1fr;}
-}
+@media (max-width: 720px){ .miniGrid{grid-template-columns:1fr;} }
 
 .miniCard{
   padding:14px;
@@ -301,9 +282,8 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
   gap:12px;
   margin-top:14px;
 }
-@media (max-width: 980px){
-  .formGrid{grid-template-columns:1fr;}
-}
+.formGrid--one{grid-template-columns:1fr !important;}
+@media (max-width: 980px){ .formGrid{grid-template-columns:1fr;} }
 
 .field label{display:flex; align-items:center; justify-content:space-between; gap:10px; font-weight:900; margin-bottom:8px}
 .field input{
@@ -343,6 +323,20 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
 }
 .statsLine{color:var(--muted); font-weight:700}
 
+/* Auth pages */
+.authWrap{
+  max-width: 520px;
+  margin: calc(40px + var(--safe-top)) auto 0 auto;
+}
+.authLinks{
+  display:flex;
+  justify-content:center;
+  gap:10px;
+  flex-wrap:wrap;
+}
+.authLinks a{color: var(--p2); text-decoration:none; font-weight:800}
+.authLinks a:hover{text-decoration:underline}
+
 /* Store */
 .storeGrid{
   display:grid;
@@ -350,9 +344,7 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
   gap:12px;
   margin-top:14px;
 }
-@media (max-width: 980px){
-  .storeGrid{grid-template-columns:1fr;}
-}
+@media (max-width: 980px){ .storeGrid{grid-template-columns:1fr;} }
 
 .storeItem{
   padding:14px;
@@ -418,9 +410,7 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
   grid-template-columns: repeat(2, minmax(0,1fr));
   gap:12px;
 }
-@media (max-width: 980px){
-  .cardsList{grid-template-columns:1fr;}
-}
+@media (max-width: 980px){ .cardsList{grid-template-columns:1fr;} }
 
 .cardTile{
   padding:14px;
@@ -432,12 +422,7 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
   min-width: 0;
 }
 .cardTile:hover{transform: translateY(-1px); background: rgba(255,255,255,.07);}
-.cardTile__row{
-  display:flex;
-  justify-content:space-between;
-  gap:10px;
-  flex-wrap: wrap;
-}
+.cardTile__row{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;}
 .cardTile__front{font-weight:900; overflow-wrap:anywhere;}
 .cardTile__back{color:var(--muted); font-weight:800; overflow-wrap:anywhere;}
 .cardTile__hint{
@@ -462,28 +447,18 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
 
 /* Game */
 .gamePanel{position:relative}
-.gameTop{
-  display:flex;
-  justify-content:space-between;
-  align-items:flex-start;
-  gap:12px;
-  flex-wrap:wrap;
-}
+.gameTop{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;}
 .gameTop__left{min-width: 220px;}
 .gameTitle{font-size:20px; font-weight:900}
 .gameArea{min-height: 320px;}
-@media (max-width: 420px){
-  .gameArea{min-height: 280px;}
-}
+@media (max-width: 420px){ .gameArea{min-height: 280px;} }
 
 .grid{
   display:grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap:10px;
 }
-@media (max-width: 360px){
-  .grid{grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));}
-}
+@media (max-width: 360px){ .grid{grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));} }
 
 .tile{
   padding:14px;
@@ -498,17 +473,11 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
   font-weight:900;
   user-select:none;
   overflow-wrap:anywhere;
-  position:relative;
 }
 .tile:hover{transform: translateY(-1px); background: rgba(255,255,255,.07);}
-.tile.sel{
-  border-color: rgba(6,182,212,.65);
-  box-shadow: 0 0 0 4px rgba(6,182,212,.12);
-}
+.tile.sel{border-color: rgba(6,182,212,.65); box-shadow: 0 0 0 4px rgba(6,182,212,.12);}
 .tile.gone{opacity:.0; pointer-events:none; transform:none !important;}
-.tile.back{
-  background: linear-gradient(135deg, rgba(124,58,237,.22), rgba(6,182,212,.14));
-}
+.tile.back{background: linear-gradient(135deg, rgba(124,58,237,.22), rgba(6,182,212,.14));}
 
 /* Scramble */
 .wordBox{
@@ -517,10 +486,7 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
   border:1px solid rgba(255,255,255,.10);
   background: rgba(255,255,255,.05);
 }
-.lettersRow{
-  display:flex; gap:10px; flex-wrap:wrap;
-  margin-top:12px;
-}
+.lettersRow{display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;}
 .letterBtn{
   padding:10px 12px;
   border-radius: 14px;
@@ -611,9 +577,7 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
   border:1px solid rgba(255,255,255,.10);
   background: rgba(255,255,255,.05);
 }
-.choiceRow{
-  display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;
-}
+.choiceRow{display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;}
 .choiceBtn{
   padding:10px 12px;
   border-radius: 14px;
@@ -623,60 +587,20 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
   cursor:pointer;
   font-weight:900;
 }
-.choiceBtn.on{
-  background: linear-gradient(135deg, rgba(34,197,94,.22), rgba(6,182,212,.12));
-  border-color: rgba(34,197,94,.45);
-}
+.choiceBtn.on{background: linear-gradient(135deg, rgba(34,197,94,.22), rgba(6,182,212,.12)); border-color: rgba(34,197,94,.45);}
 
-/* AUTH */
-.authGate{
-  padding: calc(18px + var(--safe-top)) calc(14px + var(--safe-right)) calc(18px + var(--safe-bottom)) calc(14px + var(--safe-left));
+/* Animations feedback */
+@keyframes shake{
+  0%,100%{transform:translateX(0)}
+  20%{transform:translateX(6px)}
+  40%{transform:translateX(-6px)}
+  60%{transform:translateX(4px)}
+  80%{transform:translateX(-4px)}
 }
-.authPanel{max-width: 900px; margin: 0 auto;}
-.authHeader{display:flex;justify-content:center}
-.authTabs{
-  display:flex; gap:10px; flex-wrap:wrap;
-}
-.authTab{
-  flex:1 1 180px;
-  padding:12px 14px;
-  border-radius:14px;
-  border:1px solid var(--line);
-  background: rgba(255,255,255,.05);
-  color: var(--txt);
-  font-weight:900;
-  cursor:pointer;
-}
-.authTab.active{
-  background: linear-gradient(135deg, rgba(124,58,237,.35), rgba(6,182,212,.20));
-  border-color: rgba(124,58,237,.55);
-}
-.authBox{display:none;margin-top:12px}
-.authBox.active{display:block}
-.formGrid--auth{grid-template-columns: repeat(2, minmax(0,1fr));}
-@media (max-width: 720px){
-  .formGrid--auth{grid-template-columns:1fr;}
-}
-
-/* Effects */
-@keyframes pop {
-  0%{transform:scale(.96)}
-  60%{transform:scale(1.04)}
+@keyframes pop{
+  0%{transform:scale(1)}
+  50%{transform:scale(1.05)}
   100%{transform:scale(1)}
 }
-@keyframes shake {
-  0%{transform:translateX(0)}
-  20%{transform:translateX(-6px)}
-  40%{transform:translateX(6px)}
-  60%{transform:translateX(-4px)}
-  80%{transform:translateX(4px)}
-  100%{transform:translateX(0)}
-}
-@keyframes glow {
-  0%{box-shadow:0 0 0 0 rgba(34,197,94,.0)}
-  50%{box-shadow:0 0 0 6px rgba(34,197,94,.18)}
-  100%{box-shadow:0 0 0 0 rgba(34,197,94,.0)}
-}
-.fx-pop{animation: pop .18s ease;}
-.fx-shake{animation: shake .25s ease;}
-.fx-glow{animation: glow .35s ease;}
+.fx-shake{animation:shake .28s ease}
+.fx-pop{animation:pop .18s ease}
