@@ -1,4 +1,3 @@
-<!-- app.html -->
 <!doctype html>
 <html lang="ar" dir="rtl">
 <head>
@@ -10,7 +9,6 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;600;800&display=swap" rel="stylesheet">
-
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -29,11 +27,10 @@
       </div>
 
       <div class="hud__right">
-        <button class="pill pillBtn" id="userPill" title="إعدادات الحساب">
+        <button class="pill pill--click" id="userPill" title="إعدادات الحساب">
           <span class="material-icons">person</span>
           <span id="userLabel">—</span>
         </button>
-
         <div class="pill">
           <span class="material-icons">paid</span>
           <span id="goldLabel">0</span>
@@ -77,14 +74,14 @@
           <div class="hero__left">
             <h1>تعلّم مثل لعبة</h1>
             <p class="muted">
-              العب 4 ألعاب عشوائية ثم قيّم في (التلميح) لتُسجّل حضور.
+              العب 4 ألعاب عشوائية ثم قيّم بالتلميح لتسجيل الحضور.
               <br/>المكافآت تُعتمد فقط بعد إنهاء التلميح.
             </p>
 
             <div class="hero__actions">
               <button class="btn btn--primary" id="btnStartPlay">
                 <span class="material-icons">play_circle</span>
-                بدء اللعب
+                بدأ اللعب
               </button>
 
               <button class="btn" id="btnQuickAdd">
@@ -133,9 +130,9 @@
               <div class="glass__title">قواعد سريعة</div>
               <ul class="rules">
                 <li>لا حضور بدون إنهاء <b>التلميح</b> بالكامل.</li>
-                <li>إذا أغلقت قبل التلميح: تُلغى مكافآت الألعاب الأربع.</li>
+                <li>إذا سكّرت قبل التلميح: تُلغى مكافآت الألعاب الأربع.</li>
                 <li>إضافة اليوم: <b>4</b> بطاقات إلزامي لأول مرة، أقصى <b>10</b> + بطاقتين مشتريات.</li>
-                <li>أول مرة تفتح الحساب: معك <b>900</b> ذهب.</li>
+                <li>أول مرة تفتح اللعبة: معك <b>900</b> ذهب.</li>
               </ul>
             </div>
           </div>
@@ -358,7 +355,6 @@
     </main>
   </div>
 
-  <!-- Modals -->
   <div class="modalHost" id="modalHost"></div>
 
   <script type="module" src="app.js"></script>
