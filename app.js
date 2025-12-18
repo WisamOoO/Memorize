@@ -1,5 +1,6 @@
+/* app.js */
 /* =========================
-   Memorize Web App (No DB)
+   MemoQuest (Style v1 + Logic v2)
    Persistent storage: localStorage
    ========================= */
 
@@ -7,7 +8,7 @@ const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
 /* ---------- Storage ---------- */
-const STORAGE_KEY = "memorize_app_v2";
+const STORAGE_KEY = "memoquest_app_merged_v1";
 
 function nowISODateKey() {
   const d = new Date();
@@ -16,26 +17,13 @@ function nowISODateKey() {
   const da = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${da}`;
 }
-
 function formatGroupName(dateKey) {
   const [y,m,d] = dateKey.split("-");
   return `${d}.${m}.${y.slice(2)}`;
 }
-
 function parseDateKey(dateKey){
   const [y,m,d] = dateKey.split("-").map(Number);
   return new Date(y, m-1, d);
-}
-function dateKeyFromDate(d){
-  const y = d.getFullYear();
-  const m = String(d.getMonth()+1).padStart(2,"0");
-  const da = String(d.getDate()).padStart(2,"0");
-  return `${y}-${m}-${da}`;
-}
-function addDaysToKey(dateKey, n){
-  const d = parseDateKey(dateKey);
-  d.setDate(d.getDate() + n);
-  return dateKeyFromDate(d);
 }
 function daysBetween(aKey, bKey){
   const a = parseDateKey(aKey);
@@ -43,17 +31,14 @@ function daysBetween(aKey, bKey){
   const ms = b - a;
   return Math.floor(ms / (1000*60*60*24));
 }
-
 function loadState() {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (!raw) return null;
   try { return JSON.parse(raw); } catch { return null; }
 }
-
 function saveState(state) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
-
 function defaultState() {
   const dateKey = nowISODateKey();
   return {
@@ -63,17 +48,11 @@ function defaultState() {
       lastAttendanceDateKey: null,
       streak: 0,
       lastActivity: "لا يوجد.",
-      addLockDateKey: null
+      addLockDateKey: null,
+      _resolvedDueTodayKey: null
     },
-    wallet: {
-      gold: 900,
-      xp: 0,
-    },
-    rank: {
-      tierIndex: 0,
-      subLevel: 1,
-      progress: 0,
-    },
+    wallet: { gold: 900, xp: 0 },
+    rank: { tierIndex: 0, subLevel: 1, progress: 0 },
     inventory: {
       dateKey,
       extraCardsBought: 0,
@@ -131,10 +110,7 @@ const DUE_LEVELS = new Set([1,3,6,7]);
 const MAX_DAILY_BASE = 10;
 const MIN_DAILY_FIRST = 4;
 
-// ✅ (5) مضاعفة الذهب 100%
-const GOLD_BOOST = 2.0;
-
-/* ---------- Account Level (XP -> Level) ---------- */
+/* ---------- Account Level ---------- */
 function accountLevelFromXP(xp){
   const lvl = Math.floor(Math.sqrt(Math.max(0, xp) / 500)) + 1;
   const curMinXP = (Math.max(0, (lvl-1)) ** 2) * 500;
@@ -170,40 +146,57 @@ const AudioFX = (() => {
   return {beep};
 })();
 
-/* ---------- Modal ---------- */
-function openModal(title, bodyHTML, footButtons = [], opts = {}) {
-  $("#modalTitle").textContent = title;
-  $("#modalBody").innerHTML = bodyHTML;
+/* ---------- Modal (v1 host) ---------- */
+function openModal(title, bodyHTML, buttons = [], opts = {}) {
+  const host = $("#modalHost");
+  host.innerHTML = "";
 
-  const foot = $("#modalFoot");
-  foot.innerHTML = "";
-  footButtons.forEach(btn => foot.appendChild(btn));
+  const modal = document.createElement("div");
+  modal.className = "modal";
 
-  const modal = $("#modal");
-  modal.classList.remove("hidden");
+  const head = document.createElement("div");
+  head.className = "modal__head";
+  head.innerHTML = `<h3>${escapeHTML(title)}</h3>`;
 
-  const closeBtn = $("#modalClose");
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "btn btn--small btn--ghost";
+  closeBtn.innerHTML = `<span class="material-icons">close</span> إغلاق`;
   const closable = opts.closable !== false;
-  closeBtn.style.display = closable ? "" : "none";
+  if (!closable) closeBtn.style.display = "none";
+  closeBtn.onclick = () => closeModal();
+  head.appendChild(closeBtn);
+
+  const body = document.createElement("div");
+  body.innerHTML = bodyHTML;
+
+  const foot = document.createElement("div");
+  foot.className = "rowActions";
+  foot.style.marginTop = "12px";
+  buttons.forEach(b => foot.appendChild(b));
+
+  modal.appendChild(head);
+  modal.appendChild(body);
+  if (buttons.length) modal.appendChild(foot);
+
+  host.appendChild(modal);
+  host.classList.add("show");
 
   if (closable) {
-    closeBtn.onclick = () => closeModal();
-    modal.onclick = (e) => { if (e.target === modal) closeModal(); };
+    host.onclick = (e) => { if (e.target === host) closeModal(); };
   } else {
-    closeBtn.onclick = null;
-    modal.onclick = null;
+    host.onclick = null;
   }
 }
-
 function closeModal() {
-  $("#modal").classList.add("hidden");
+  const host = $("#modalHost");
+  host.classList.remove("show");
+  host.innerHTML = "";
 }
-
-function makeBtn(text, cls="btn", onClick=()=>{}) {
+function makeBtn(htmlText, cls="btn", onClick=()=>{}) {
   const b = document.createElement("button");
   b.className = cls;
   b.type = "button";
-  b.textContent = text;
+  b.innerHTML = htmlText;
   b.onclick = onClick;
   return b;
 }
@@ -231,54 +224,55 @@ function escapeHTML(s) {
     "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"
   }[m]));
 }
-
 function uuid() {
   return "c_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
 }
-
 function getTodayGroupKey() {
   return safeTodayKey(STATE);
 }
-
 function getOrCreateTodayGroup() {
   const key = getTodayGroupKey();
   if (!STATE.groups[key]) {
-    STATE.groups[key] = {
-      id: key,
-      name: formatGroupName(key),
-      dateKey: key,
-      cardIds: [],
-    };
+    STATE.groups[key] = { id:key, name: formatGroupName(key), dateKey:key, cardIds:[] };
   }
   return STATE.groups[key];
 }
-
 function todayCapacity() {
   const extra = Math.min(2, STATE.inventory.extraCardsBought);
   return MAX_DAILY_BASE + extra;
 }
-
 function todayCount() {
   const g = STATE.groups[getTodayGroupKey()];
   return g ? g.cardIds.length : 0;
 }
-
 function allCardsArray() {
   return Object.values(STATE.cards);
 }
-
 function dueCardsToday() {
   return allCardsArray()
     .filter(c => !STATE.ignoreList[c.id])
     .filter(c => DUE_LEVELS.has(c.level));
 }
-
 function dueGroupsToday() {
   const due = new Set(dueCardsToday().flatMap(c => c.groupKeys));
   return Array.from(due).map(k => STATE.groups[k]).filter(Boolean);
 }
 
-/* ---------- Add lock (no exit before 4) ---------- */
+/* ---------- Card daily progression ---------- */
+function bumpCardLevelsForNewDay(prevDayKey, todayKey){
+  if (STATE.meta.lastAttendanceDateKey !== prevDayKey) return;
+
+  Object.values(STATE.cards).forEach(c => {
+    if (!c) return;
+    if (c.level < 6) c.level += 1;
+
+    const addKey = c.addDateKey || prevDayKey;
+    const age = daysBetween(addKey, todayKey);
+    if (age >= 30) c.level = 7;
+  });
+}
+
+/* ---------- Add lock ---------- */
 function addLockActiveToday(){
   const today = getTodayGroupKey();
   return STATE.meta.addLockDateKey === today && todayCount() < MIN_DAILY_FIRST;
@@ -292,93 +286,51 @@ function setAddLockIfNeeded(){
   STATE.meta.addLockDateKey = today;
 }
 function clearAddInputs(){
-  $("#inForeign").value = "";
-  $("#inNative").value = "";
+  $("#inFront").value = "";
+  $("#inBack").value = "";
   $("#inHint").value = "";
 }
 
-/* =========================================================
-   Daily rollover + Levels advance with days
-   ========================================================= */
-
-function updateCardLevelsAtRollover(dayKey, nextKey){
-  Object.values(STATE.cards).forEach(c => {
-    if (!c) return;
-    if (c.level === 7) return;
-
-    const addKey = c.addDateKey || dayKey;
-    const ageNext = daysBetween(addKey, nextKey);
-    if (ageNext >= 30) {
-      c.level = 7;
-      return;
-    }
-
-    const noAttendanceThatDay = (STATE.meta.lastAttendanceDateKey !== dayKey);
-    if (DUE_LEVELS.has(c.level) && noAttendanceThatDay) {
-      return;
-    }
-
-    if (c.level < 6) c.level += 1;
-  });
-}
-
-function applyEndOfDay(dayKey, nextKey){
-  if (STATE.meta.lastAttendanceDateKey !== dayKey) {
-    if ((STATE.inventory.fuel || 0) > 0) {
-      STATE.inventory.fuel -= 1;
-      STATE.meta.lastActivity = "تم استخدام 1 وقود لحماية الحماسة من الانطفاء.";
-      AudioFX.beep("coin");
-    } else {
-      STATE.meta.streak = 0;
-    }
-  }
-
-  updateCardLevelsAtRollover(dayKey, nextKey);
-
-  const unused = Math.max(0, (STATE.inventory.extraCardsBought||0) - (STATE.inventory.extraCardsUsed||0));
-  if (unused > 0) {
-    const refund = Math.floor(unused * 100 * 0.5);
-    STATE.wallet.gold += refund;
-    STATE.meta.lastActivity = `تمت إعادة ${refund} ذهب (50% من بطاقات إضافية غير مستخدمة).`;
-    AudioFX.beep("coin");
-  }
-
-  STATE.inventory.extraCardsBought = 0;
-  STATE.inventory.extraCardsUsed = 0;
-  STATE.meta.addLockDateKey = null;
-
-  STATE.inventory.dateKey = nextKey;
-}
-
+/* ---------- Day rollover ---------- */
 function ensureDayRollover() {
   const today = safeTodayKey(STATE);
+  const prev = STATE.inventory.dateKey;
 
-  if (!STATE.inventory.dateKey) {
+  if (today !== prev) {
+    if (STATE.meta.lastAttendanceDateKey !== prev) {
+      if ((STATE.inventory.fuel || 0) > 0) {
+        STATE.inventory.fuel -= 1;
+        STATE.meta.lastActivity = "تم استخدام 1 وقود لحماية الحماسة من الانطفاء.";
+        AudioFX.beep("coin");
+      } else {
+        STATE.meta.streak = 0;
+      }
+    }
+
+    bumpCardLevelsForNewDay(prev, today);
+
+    Object.values(STATE.cards).forEach(c => {
+      const addKey = c?.addDateKey;
+      if (!addKey) return;
+      const age = daysBetween(addKey, today);
+      if (age >= 30) c.level = 7;
+    });
+
+    const unused = Math.max(0, STATE.inventory.extraCardsBought - STATE.inventory.extraCardsUsed);
+    if (unused > 0) {
+      const refund = Math.floor(unused * 100 * 0.5);
+      STATE.wallet.gold += refund;
+      STATE.meta.lastActivity = `تمت إعادة ${refund} ذهب (50% من بطاقات إضافية غير مستخدمة).`;
+      AudioFX.beep("coin");
+    }
+
     STATE.inventory.dateKey = today;
-    saveState(STATE);
-    return;
-  }
-
-  while (STATE.inventory.dateKey !== today) {
-    const dayKey = STATE.inventory.dateKey;
-    const nextKey = addDaysToKey(dayKey, 1);
-    applyEndOfDay(dayKey, nextKey);
+    STATE.inventory.extraCardsBought = 0;
+    STATE.inventory.extraCardsUsed = 0;
+    STATE.meta.addLockDateKey = null;
   }
 
   saveState(STATE);
-}
-
-function startMidnightWatcher(){
-  setInterval(() => {
-    const realToday = safeTodayKey(STATE);
-    if (realToday !== STATE.inventory.dateKey) {
-      ensureDayRollover();
-      refreshTopbar();
-      refreshStoreInv();
-      if ($("#view-add").classList.contains("active")) refreshAddView();
-      if ($("#view-cards").classList.contains("active")) refreshCardsView($("#cardSearch")?.value || "");
-    }
-  }, 30000);
 }
 
 /* ---------- Rank update ---------- */
@@ -413,43 +365,47 @@ function applyRatingDelta(delta) {
   }
 }
 
-/* ---------- UI ---------- */
-function refreshTopbar() {
-  $("#goldVal").textContent = STATE.wallet.gold;
-  $("#xpVal").textContent = STATE.wallet.xp;
+/* ---------- UI refresh ---------- */
+function refreshHUD() {
+  const todayKey = safeTodayKey(STATE);
+  const g = getOrCreateTodayGroup();
+
+  $("#todayLabel").textContent = `مجموعة اليوم: ${g.name}`;
+  $("#goldLabel").textContent = STATE.wallet.gold;
 
   const acc = accountLevelFromXP(STATE.wallet.xp);
-  $("#accLevelVal").textContent = `Lv ${acc.level}`;
+  $("#xpLabel").textContent = `LV ${acc.level}`;
+  $("#rankLabel").textContent = `${TIERS[STATE.rank.tierIndex]} ${STATE.rank.subLevel}`;
+  $("#streakLabel").textContent = STATE.meta.streak;
 
-  $("#rankVal").textContent = `${TIERS[STATE.rank.tierIndex]} ${STATE.rank.subLevel}`;
-  $("#streakVal").textContent = STATE.meta.streak;
+  const xpPct = Math.max(0, Math.min(100, ((STATE.wallet.xp - acc.curMinXP) / Math.max(1, (acc.nextMinXP - acc.curMinXP))) * 100));
+  $("#xpBar").style.width = `${xpPct.toFixed(1)}%`;
+  $("#xpSub").textContent = `XP: ${STATE.wallet.xp} (للقادم: ${acc.toNext})`;
 
-  $("#homeLevelLine").textContent = `المستوى: ${acc.level} (للمستوى التالي: ${acc.toNext} XP)`;
-  $("#homeXpLine").textContent = `XP: ${STATE.wallet.xp}`;
+  const need = targetProgressForRank(STATE.rank.tierIndex, STATE.rank.subLevel);
+  const rankPct = Math.max(0, Math.min(100, (STATE.rank.progress / Math.max(1, need)) * 100));
+  $("#rankBar").style.width = `${rankPct.toFixed(1)}%`;
+  $("#rankSub").textContent = `تقدّم: ${STATE.rank.progress} / ${need}`;
 
   const due = dueCardsToday().length;
-  const groups = dueGroupsToday().length;
-  $("#todaySummary").innerHTML = `
-    البطاقات المستحقة اليوم: <b>${due}</b><br/>
-    مجموعات يومية مستحقة: <b>${groups}</b><br/>
-    السعة اليوم: <b>${todayCapacity()}</b>
-  `;
-  $("#lastActivity").innerHTML = STATE.meta.lastActivity || "لا يوجد.";
-}
+  const groupsDue = dueGroupsToday().length;
+  $("#dueCountLabel").textContent = due;
+  $("#dueSub").textContent = `مجموعات مستحقة: ${groupsDue} | سعة اليوم: ${todayCapacity()}`;
 
-function refreshStoreInv() {
-  $("#invExtra").textContent = Math.max(0, (STATE.inventory.extraCardsBought||0) - (STATE.inventory.extraCardsUsed||0));
-  $("#invSkip").textContent = STATE.inventory.skip;
-  $("#invHelp").textContent = STATE.inventory.help;
-  $("#invFuel").textContent = STATE.inventory.fuel || 0;
-}
+  $("#chipSkip").textContent = `تخطي: ${STATE.inventory.skip}`;
+  $("#chipHelp").textContent = `مساعدة: ${STATE.inventory.help}`;
+  $("#chipFuel").textContent = `وقود: ${STATE.inventory.fuel || 0}`;
 
-function refreshAddView() {
+  const invExtra = Math.max(0, STATE.inventory.extraCardsBought - STATE.inventory.extraCardsUsed);
+  $("#invLine").textContent = `إضافي اليوم: ${invExtra} | تخطي: ${STATE.inventory.skip} | مساعدة: ${STATE.inventory.help} | وقود: ${STATE.inventory.fuel || 0}`;
+
   const cap = todayCapacity();
   const cnt = todayCount();
-  $("#todayCap").textContent = cap;
-  $("#todayCount").textContent = cnt;
+  $("#addHint").textContent = `بطاقات اليوم: ${cnt} / ${cap} | أول إضافة: لا خروج قبل ${MIN_DAILY_FIRST} أو حذف وخروج.`;
+  $("#addStats").textContent = STATE.meta.lastActivity || "—";
+}
 
+function refreshTodayList() {
   const g = getOrCreateTodayGroup();
   const list = $("#todayList");
   list.innerHTML = "";
@@ -457,80 +413,85 @@ function refreshAddView() {
   g.cardIds.slice().reverse().forEach(id => {
     const c = STATE.cards[id];
     if (!c) return;
+
     const el = document.createElement("div");
-    el.className = "card";
+    el.className = "cardTile";
     el.innerHTML = `
-      <div class="cardTop">
-        <div>
-          <div class="cardTitle">${escapeHTML(c.foreign)}</div>
-          <div class="cardSub">${escapeHTML(c.native)}</div>
-        </div>
+      <div class="cardTile__row">
+        <div class="cardTile__front">${escapeHTML(c.foreign)}</div>
         <div class="badge">مستوى ${c.level}</div>
       </div>
+      <div class="cardTile__back">${escapeHTML(c.native)}</div>
+      <div class="cardTile__hint">${escapeHTML(c.hint)}</div>
+      <div class="badges">
+        <span class="badge">${formatGroupName(c.addDateKey)}</span>
+        <span class="badge">آخر تقييم: ${escapeHTML(c.lastHintEval || "-")}</span>
+      </div>
     `;
-    el.onclick = () => {
-      openModal("تلميح البطاقة", `
-        <div class="bigText">${escapeHTML(c.hint)}</div>
-        <div class="divider"></div>
-        <div class="muted">النص: <b>${escapeHTML(c.foreign)}</b></div>
-        <div class="muted">الترجمة: <b>${escapeHTML(c.native)}</b></div>
-      `, [makeBtn("إغلاق","btn",closeModal)]);
-    };
+    el.onclick = () => el.classList.toggle("open");
     list.appendChild(el);
   });
+
+  if (!g.cardIds.length) {
+    list.innerHTML = `<div class="muted">لا توجد بطاقات اليوم بعد.</div>`;
+  }
 }
 
-function refreshCardsView(filter="") {
-  const list = $("#allCardsList");
+function refreshCardsList(filter="") {
+  const list = $("#cardsList");
   list.innerHTML = "";
 
+  const f = filter.trim().toLowerCase();
   const cards = allCardsArray()
     .filter(c => {
-      const f = filter.trim().toLowerCase();
       if (!f) return true;
-      return (c.foreign || "").toLowerCase().includes(f) ||
-             (c.native || "").toLowerCase().includes(f) ||
-             (c.hint || "").toLowerCase().includes(f);
+      return (c.foreign||"").toLowerCase().includes(f) ||
+             (c.native||"").toLowerCase().includes(f) ||
+             (c.hint||"").toLowerCase().includes(f);
     })
-    .sort((a,b) => b.addedAt - a.addedAt);
+    .sort((a,b)=> b.addedAt - a.addedAt);
 
-  if (cards.length === 0) {
+  if (!cards.length) {
     list.innerHTML = `<div class="muted">لا توجد بطاقات.</div>`;
     return;
   }
 
   cards.forEach(c => {
-    const el = document.createElement("div");
-    el.className = "card";
     const ignored = !!STATE.ignoreList[c.id];
+    const el = document.createElement("div");
+    el.className = "cardTile";
     el.innerHTML = `
-      <div class="cardTop">
-        <div>
-          <div class="cardTitle">${escapeHTML(c.foreign)}</div>
-          <div class="cardSub">${escapeHTML(c.native)}</div>
-        </div>
+      <div class="cardTile__row">
+        <div class="cardTile__front">${escapeHTML(c.foreign)}</div>
         <div class="badge">${ignored ? "متجاهلة" : `مستوى ${c.level}`}</div>
+      </div>
+      <div class="cardTile__back">${escapeHTML(c.native)}</div>
+      <div class="cardTile__hint">${escapeHTML(c.hint)}</div>
+      <div class="badges">
+        <span class="badge">مجموعات: ${(c.groupKeys||[]).map(k => STATE.groups[k]?.name || k).join("، ")}</span>
+        <span class="badge">آخر تقييم: ${escapeHTML(c.lastHintEval || "-")}</span>
       </div>
     `;
     el.onclick = () => {
       openModal("تفاصيل البطاقة", `
-        <div class="bigText">${escapeHTML(c.hint)}</div>
-        <div class="divider"></div>
-        <div class="muted">النص: <b>${escapeHTML(c.foreign)}</b></div>
-        <div class="muted">الترجمة: <b>${escapeHTML(c.native)}</b></div>
-        <div class="muted">المجموعات: <b>${(c.groupKeys||[]).map(k => STATE.groups[k]?.name || k).join("، ")}</b></div>
-        <div class="muted">آخر تقييم: <b>${c.lastHintEval || "-"}</b></div>
+        <div class="modalRow">
+          <div><b>النص:</b> ${escapeHTML(c.foreign)}</div>
+          <div><b>الترجمة:</b> ${escapeHTML(c.native)}</div>
+          <div><b>التلميح:</b> ${escapeHTML(c.hint)}</div>
+          <div><b>المستوى:</b> ${ignored ? "متجاهلة" : c.level}</div>
+          <div><b>آخر تقييم:</b> ${escapeHTML(c.lastHintEval || "-")}</div>
+        </div>
       `, [
-        makeBtn(ignored ? "إلغاء التجاهل" : "تجاهل","btn warn", () => {
+        makeBtn(`<span class="material-icons">visibility_off</span> ${ignored ? "إلغاء التجاهل" : "تجاهل"}`, "btn btn--primary", () => {
           if (ignored) delete STATE.ignoreList[c.id];
           else STATE.ignoreList[c.id] = true;
           STATE.meta.lastActivity = "تم تحديث قائمة التجاهل.";
           saveState(STATE);
-          refreshTopbar();
-          refreshCardsView($("#cardSearch").value);
           closeModal();
+          refreshHUD();
+          refreshCardsList($("#cardsSearch").value);
         }),
-        makeBtn("إغلاق","btn",closeModal)
+        makeBtn(`<span class="material-icons">close</span> إغلاق`, "btn", closeModal)
       ]);
     };
     list.appendChild(el);
@@ -538,82 +499,71 @@ function refreshCardsView(filter="") {
 }
 
 /* ---------- Views ---------- */
-function showView(id) {
+function showView(name) {
   $$(".view").forEach(v => v.classList.remove("active"));
-  $(`#view-${id}`).classList.add("active");
+  $(`#view-${name}`).classList.add("active");
 
-  if (id === "add") {
+  $$(".nav__btn").forEach(b => b.classList.toggle("active", b.dataset.view === name));
+
+  if (name === "add") {
     clearAddInputs();
-    refreshAddView();
+    refreshTodayList();
   }
+  if (name === "cards") refreshCardsList($("#cardsSearch").value || "");
+  refreshHUD();
 }
 
 /* ---------- Help texts ---------- */
 const HELP_TEXTS = {
-  foreignHelp: "أدخل الكلمة أو الجملة باللغة التي تتعلمها. الحقل إلزامي. الحد 45 حرف.",
-  nativeHelp: "أدخل الترجمة أو التوضيح بلغتك. الحقل إلزامي. الحد 45 حرف.",
-  hintHelp: "أدخل تلميحًا يساعد على التذكر (رمز/إيموجي/وصف). الحقل إلزامي. الحد 60 حرف.",
+  foreignHelp: "أدخل الكلمة/الجملة باللغة التي تتعلمها. الحقل إلزامي. حد 45 حرف.",
+  nativeHelp: "أدخل الترجمة/التوضيح بلغتك. الحقل إلزامي. حد 45 حرف.",
+  hintHelp: "أدخل تلميحًا يساعد التذكر (رمز/إيموجي/وصف). الحقل إلزامي. حد 60 حرف."
 };
 
-/* ---------- Add flow rules ---------- */
+/* ---------- Add flow ---------- */
 function canExitAddView() {
   return !addLockActiveToday();
 }
-
 function deleteTodayProgressAndExit() {
   const key = getTodayGroupKey();
   const g = STATE.groups[key];
-
   if (g) {
     g.cardIds.forEach(id => { delete STATE.cards[id]; delete STATE.ignoreList[id]; });
     g.cardIds = [];
   }
-
   clearAddInputs();
   STATE.meta.addLockDateKey = null;
-
   STATE.meta.lastActivity = "تم حذف إضافة اليوم غير المكتملة.";
   saveState(STATE);
-
   closeModal();
   showView("home");
-  refreshTopbar();
 }
-
 function confirmExitAddView() {
-  if (canExitAddView()) {
-    clearAddInputs();
-    showView("home");
-    refreshTopbar();
-    return;
-  }
-
-  openModal("تنبيه", `
-    يجب حفظ <b>${MIN_DAILY_FIRST}</b> بطاقات على الأقل قبل الخروج.
-  `, [
-    makeBtn("حسنًا","btn primary", () => closeModal()),
-    makeBtn("حذف وخروج","btn warn", () => deleteTodayProgressAndExit())
+  if (canExitAddView()) { showView("home"); return; }
+  openModal("تنبيه", `يجب حفظ <b>${MIN_DAILY_FIRST}</b> بطاقات على الأقل قبل الخروج.`, [
+    makeBtn("حسنًا","btn btn--primary", closeModal),
+    makeBtn("حذف وخروج","btn btn--danger", deleteTodayProgressAndExit)
   ], { closable:false });
 }
-
 function setLockOnAnyInput(){
-  const a = $("#inForeign").value.trim();
-  const b = $("#inNative").value.trim();
+  const a = $("#inFront").value.trim();
+  const b = $("#inBack").value.trim();
   const c = $("#inHint").value.trim();
   if (a || b || c) {
     setAddLockIfNeeded();
     saveState(STATE);
   }
 }
-
 function saveNewCard() {
-  const foreign = $("#inForeign").value.trim();
-  const native = $("#inNative").value.trim();
+  const foreign = $("#inFront").value.trim();
+  const native = $("#inBack").value.trim();
   const hint = $("#inHint").value.trim();
 
   if (!foreign || !native || !hint) {
     AudioFX.beep("bad");
-    openModal("خطأ", "جميع الحقول إلزامية.", [makeBtn("إغلاق","btn",closeModal)]);
+    openModal("خطأ", "جميع الحقول إلزامية.", [
+      makeBtn("إغلاق","btn btn--primary", closeModal)
+    ]);
     return;
   }
 
@@ -623,7 +573,9 @@ function saveNewCard() {
   const cnt = todayCount();
   if (cnt >= cap) {
     AudioFX.beep("bad");
-    openModal("تنبيه", `وصلت للحد اليومي (${cap}).`, [makeBtn("إغلاق","btn",closeModal)]);
+    openModal("تنبيه", `وصلت للحد اليومي (${cap}).`, [
+      makeBtn("إغلاق","btn btn--primary", closeModal)
+    ]);
     return;
   }
 
@@ -652,127 +604,100 @@ function saveNewCard() {
     STATE.inventory.extraCardsUsed = Math.max(STATE.inventory.extraCardsUsed, over);
   }
 
-  if (g.cardIds.length >= MIN_DAILY_FIRST) {
-    STATE.meta.addLockDateKey = null;
-  }
+  if (g.cardIds.length >= MIN_DAILY_FIRST) STATE.meta.addLockDateKey = null;
 
   STATE.meta.lastActivity = `تمت إضافة بطاقة جديدة إلى مجموعة ${g.name}.`;
   saveState(STATE);
 
   clearAddInputs();
   AudioFX.beep("ok");
-  refreshTopbar();
-  refreshAddView();
+  refreshHUD();
+  refreshTodayList();
 }
 
-/* ---------- ✅ (4) Overdue modal يظهر فقط عند غياب فعلي ---------- */
-function wasAbsentAtLeastOneDay() {
-  const today = safeTodayKey(STATE);
-  const yKey = addDaysToKey(today, -1);
-  const last = STATE.meta.lastAttendanceDateKey;
-  if (!last) return true;               // لم يسجل حضور سابقًا = يعتبر غياب
-  if (last === today) return false;     // حاضر اليوم
-  if (last === yKey) return false;      // حاضر أمس
-  return true;                          // غير ذلك = غياب يوم أو أكثر
-}
-
+/* ---------- Overdue modal (mandatory) ---------- */
 function checkOverdueModal() {
   const today = safeTodayKey(STATE);
-  if (!wasAbsentAtLeastOneDay()) return;                 // ✅ لا رسالة بدون غياب
-  if (STATE.meta._resolvedDueTodayKey === today) return;
-
-  const yKey = addDaysToKey(today, -1);
-
-  // فقط مجموعات الأيام السابقة (ليس اليوم)
-  const dueGroups = dueGroupsToday().filter(g => (g?.dateKey || g?.id) <= yKey);
+  const dueGroups = dueGroupsToday();
   if (dueGroups.length === 0) return;
 
+  if (STATE.meta._resolvedDueTodayKey === today) return;
+  if (STATE.meta.lastAttendanceDateKey === today) return;
+
   const decisions = {};
-
-  const body = document.createElement("div");
-  body.innerHTML = `<div class="muted" style="margin-bottom:10px">
-    لديك مجموعات يومية تم تفويتها بسبب الغياب. اختر إجراءً لكل مجموعة ثم اضغط "حسنًا".
-  </div>`;
-
-  const list = document.createElement("div");
-  list.style.display = "grid";
-  list.style.gap = "10px";
+  let body = `<div class="muted" style="margin-bottom:10px">لديك مجموعات يومية مستحقة. اختر إجراءً لكل مجموعة ثم اضغط "حسنًا".</div>`;
 
   dueGroups.forEach(g => {
-    const row = document.createElement("div");
-    row.className = "field";
-    row.innerHTML = `
-      <div style="display:flex;justify-content:space-between;gap:10px;align-items:center">
-        <div style="font-weight:1000">لقد فوّت المجموعة <b>${escapeHTML(g.name)}</b>. هل تود مراجعتها؟</div>
-        <div class="badge">متأخرة</div>
-      </div>
-      <div class="btnRow" style="margin-top:10px">
-        <button class="btn" data-k="${g.id}" data-v="review">مراجعة</button>
-        <button class="btn warn" data-k="${g.id}" data-v="reset">إعادة</button>
-        <button class="btn" data-k="${g.id}" data-v="ignore">تجاهل</button>
+    body += `
+      <div class="modalRow">
+        <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center">
+          <div style="font-weight:900">لقد فوّت المجموعة <b>${escapeHTML(g.name)}</b>. هل تود مراجعتها؟</div>
+          <span class="badge">مستحقة</span>
+        </div>
+        <div class="choiceRow">
+          <button class="choiceBtn" data-k="${g.id}" data-v="review">مراجعة</button>
+          <button class="choiceBtn" data-k="${g.id}" data-v="reset">إعادة</button>
+          <button class="choiceBtn" data-k="${g.id}" data-v="ignore">تجاهل</button>
+        </div>
       </div>
     `;
-
-    row.querySelectorAll("button[data-k]").forEach(b => {
-      b.onclick = () => {
-        const k = b.getAttribute("data-k");
-        const v = b.getAttribute("data-v");
-        decisions[k] = v;
-
-        row.querySelectorAll("button[data-k]").forEach(x => x.classList.remove("primary"));
-        b.classList.add("primary");
-        AudioFX.beep("click");
-      };
-    });
-
-    list.appendChild(row);
   });
-
-  body.appendChild(list);
 
   const btnAllReview = makeBtn("مراجعة الكل","btn", () => {
     dueGroups.forEach(g => decisions[g.id] = "review");
-    list.querySelectorAll("button[data-v='review']").forEach(b => b.classList.add("primary"));
-    list.querySelectorAll("button[data-v='reset'],button[data-v='ignore']").forEach(b => b.classList.remove("primary"));
+    syncChoiceUI("review");
   });
-  const btnAllReset = makeBtn("إعادة الكل","btn warn", () => {
+  const btnAllReset = makeBtn("إعادة الكل","btn btn--danger", () => {
     dueGroups.forEach(g => decisions[g.id] = "reset");
-    list.querySelectorAll("button[data-v='reset']").forEach(b => b.classList.add("primary"));
-    list.querySelectorAll("button[data-v='review'],button[data-v='ignore']").forEach(b => b.classList.remove("primary"));
+    syncChoiceUI("reset");
   });
   const btnAllIgnore = makeBtn("تجاهل الكل","btn", () => {
     dueGroups.forEach(g => decisions[g.id] = "ignore");
-    list.querySelectorAll("button[data-v='ignore']").forEach(b => b.classList.add("primary"));
-    list.querySelectorAll("button[data-v='review'],button[data-v='reset']").forEach(b => b.classList.remove("primary"));
+    syncChoiceUI("ignore");
   });
 
-  const ok = makeBtn("حسنًا","btn primary", () => {
+  const ok = makeBtn("حسنًا","btn btn--primary", () => {
     const missing = dueGroups.filter(g => !decisions[g.id]);
-    if (missing.length) {
-      AudioFX.beep("bad");
-      return;
-    }
+    if (missing.length) { AudioFX.beep("bad"); return; }
 
     dueGroups.forEach(g => {
       const d = decisions[g.id];
       if (d === "reset") {
-        g.cardIds.forEach(id => {
-          const c = STATE.cards[id];
-          if (c) c.level = 0;
-        });
+        g.cardIds.forEach(id => { const c = STATE.cards[id]; if (c) c.level = 0; });
       } else if (d === "ignore") {
         g.cardIds.forEach(id => STATE.ignoreList[id] = true);
       }
     });
 
     STATE.meta._resolvedDueTodayKey = today;
-    STATE.meta.lastActivity = "تم تحديد إجراء للمجموعات المتأخرة.";
+    STATE.meta.lastActivity = "تم تحديد إجراء للمجموعات المستحقة.";
     saveState(STATE);
     closeModal();
-    refreshTopbar();
+    refreshHUD();
   });
 
-  openModal("مجموعات متأخرة", body.outerHTML, [btnAllReview, btnAllReset, btnAllIgnore, ok], { closable:false });
+  openModal("مجموعات مستحقة", body, [btnAllReview, btnAllReset, btnAllIgnore, ok], { closable:false });
+
+  // wire buttons inside modal
+  $("#modalHost").querySelectorAll("button.choiceBtn[data-k]").forEach(b => {
+    b.onclick = () => {
+      const k = b.getAttribute("data-k");
+      const v = b.getAttribute("data-v");
+      decisions[k] = v;
+      const row = b.closest(".modalRow");
+      row.querySelectorAll(".choiceBtn").forEach(x => x.classList.remove("on"));
+      b.classList.add("on");
+      AudioFX.beep("click");
+    };
+  });
+
+  function syncChoiceUI(which){
+    $("#modalHost").querySelectorAll(".modalRow").forEach(row => {
+      row.querySelectorAll(".choiceBtn").forEach(x => x.classList.remove("on"));
+      const btn = row.querySelector(`.choiceBtn[data-v="${which}"]`);
+      if (btn) btn.classList.add("on");
+    });
+  }
 }
 
 /* ---------- Lesson / Games ---------- */
@@ -796,7 +721,7 @@ function startLesson() {
   if (cards.length === 0) {
     AudioFX.beep("bad");
     openModal("تنبيه", `لم تقم بإضافة بطاقات لعب لهذا اليوم، قم بإضافة بطاقات جديدة وعد غدًا`, [
-      makeBtn("موافق","btn primary", closeModal)
+      makeBtn("موافق","btn btn--primary", closeModal)
     ]);
     return;
   }
@@ -808,21 +733,17 @@ function startLesson() {
     goldDelta: 0,
     xpDelta: 0,
     ratingDelta: 0,
-
+    usedHelpInGame: false,
     cards,
     gameQueue,
     playedGames: [],
     inHint: false,
-
     scrambledIds: [],
     typingIds: [],
     hintIndex: 0,
     completedHintAll: false,
-
-    // ✅ (2) سجل مساعدات لكل لعبة منفصل
-    currentGame: null,
-    helpHistory: { matching: [], flip: [], scrambled: [], typing: [] },
-    usedHelpInGame: false,
+    helpLogs: { matching:[], flip:[], scrambled:[], typing:[] },
+    currentGame: null
   };
 
   const dueIds = cards.map(c=>c.id);
@@ -833,13 +754,11 @@ function startLesson() {
   PLAY.scrambledIds = pick1;
   PLAY.typingIds = pick2;
 
-  showView("play");
-
-  // ✅ (1) زر التالي يظهر فقط إن بقي ألعاب
+  showView("game");
   $("#btnNextGame").style.display = "";
   $("#btnGoHint").style.display = "";
-  $("#btnSkip").style.display = "";
-  $("#btnHelp").style.display = "";
+  $("#btnUseSkip").style.display = "";
+  $("#btnUseHelp").style.display = "";
   $("#btnHelpLog").style.display = "";
 
   updateHUD();
@@ -865,8 +784,7 @@ function updateHUD() {
   $("#hudGold").textContent = (PLAY.goldDelta>=0?"+":"") + PLAY.goldDelta;
   $("#hudXP").textContent = (PLAY.xpDelta>=0?"+":"") + PLAY.xpDelta;
   $("#hudRate").textContent = (PLAY.ratingDelta>=0?"+":"") + PLAY.ratingDelta;
-  refreshTopbar();
-  refreshStoreInv();
+  refreshHUD();
 }
 
 function currentAverageLevelMultiplier() {
@@ -874,17 +792,125 @@ function currentAverageLevelMultiplier() {
   return lvls.reduce((a,b)=>a+b,0) / Math.max(1, lvls.length);
 }
 
-function addXP(amount){ PLAY.xpDelta += Math.max(0, amount|0); }
-
-// ✅ (5) مضاعفة ذهب الألعاب هنا فقط
-function addGold(amount){
-  const boosted = Math.round((amount|0) * GOLD_BOOST);
-  PLAY.goldDelta += boosted;
+function applyPerfectGameRewards() {
+  const L = currentAverageLevelMultiplier();
+  const D = difficultyD(STATE.rank);
+  PLAY.goldDelta += 75;
+  PLAY.xpDelta += Math.round(220 * L);
+  PLAY.ratingDelta += Math.round((60 * L) / D);
+  AudioFX.beep("coin");
+  updateHUD();
 }
 
-function addRating(amount){ PLAY.ratingDelta += (amount|0); }
+function consumeSkipOrAskBuy() {
+  if (STATE.inventory.skip <= 0) {
+    AudioFX.beep("bad");
+    openModal("لا يوجد تخطي", "لا تملك تخطي. يمكن شراؤه من المتجر.", [
+      makeBtn("الذهاب للمتجر","btn btn--primary", ()=>{ closeModal(); showView("store"); }),
+      makeBtn("إغلاق","btn", closeModal)
+    ]);
+    return false;
+  }
+  return true;
+}
+function consumeHelpOrAskBuy() {
+  if (STATE.inventory.help <= 0) {
+    AudioFX.beep("bad");
+    openModal("لا توجد مساعدة", "لا تملك مساعدات. يمكن شراؤها من المتجر.", [
+      makeBtn("الذهاب للمتجر","btn btn--primary", ()=>{ closeModal(); showView("store"); }),
+      makeBtn("إغلاق","btn", closeModal)
+    ]);
+    return false;
+  }
+  return true;
+}
 
-function speedFactorFromGame(sec){ return speedFactor(sec); }
+function launchNextGame() {
+  PLAY.usedHelpInGame = false;
+  const next = PLAY.gameQueue.find(g => !PLAY.playedGames.includes(g));
+  if (!next) {
+    $("#btnNextGame").style.display = "none";
+    return;
+  }
+  renderGame(next);
+}
+
+function gameTitle(k) {
+  return ({
+    matching: "لعبة التوصيل",
+    flip: "لعبة قلب البطاقات",
+    scrambled: "لعبة ترتيب الأحرف",
+    typing: "لعبة الكتابة",
+    hint: "لعبة التلميح"
+  }[k] || "لعبة");
+}
+function gameSubtitle(k) {
+  return ({
+    matching: "اختر نصًا ثم ترجمته. الصحيح يختفي، والخطأ يسمح بإعادة بلا حدود.",
+    flip: "تذكر أماكن النص والترجمة. عرض 5 ثوانٍ ثم قلب.",
+    scrambled: "رتب أحرف النص الصحيح. 30% من بطاقات اليوم.",
+    typing: "اكتب النص الأصلي عند رؤية الترجمة. 30% مختلفة عن ترتيب الحروف.",
+    hint: "التقييم إلزامي لتسجيل الحضور."
+  }[k] || "");
+}
+
+function renderGame(gameKey) {
+  PLAY.currentGame = gameKey;
+  $("#gameArea").innerHTML = "";
+  $("#gameTitle").textContent = gameTitle(gameKey);
+  $("#gameSub").textContent = gameSubtitle(gameKey);
+
+  $("#btnUseSkip").style.display = (gameKey !== "hint") ? "" : "none";
+  $("#btnUseHelp").style.display = (gameKey !== "hint") ? "" : "none";
+  $("#btnHelpLog").style.display = (gameKey !== "hint") ? "" : "none";
+
+  $("#btnUseSkip").onclick = () => {
+    if (gameKey === "hint") return;
+    if (!consumeSkipOrAskBuy()) return;
+
+    openModal("تأكيد التخطي", "هل تريد تخطي هذه اللعبة والحصول على مكاسب مثالية؟", [
+      makeBtn("إلغاء","btn", closeModal),
+      makeBtn("نعم","btn btn--primary", () => {
+        closeModal();
+        STATE.inventory.skip -= 1;
+        applyPerfectGameRewards();
+        PLAY.playedGames.push(gameKey);
+        saveState(STATE);
+        afterGameFinished(gameKey);
+      })
+    ]);
+  };
+
+  $("#btnUseHelp").onclick = () => {
+    if (gameKey === "hint") return;
+    if (!consumeHelpOrAskBuy()) return;
+
+    STATE.inventory.help -= 1;
+    PLAY.usedHelpInGame = true;
+    saveState(STATE);
+
+    if (gameKey === "matching") matchingHelp();
+    if (gameKey === "flip") flipHelp();
+    if (gameKey === "scrambled") scrambledHelp();
+    if (gameKey === "typing") typingHelp();
+
+    AudioFX.beep("click");
+    refreshHUD();
+  };
+
+  $("#btnHelpLog").onclick = () => showHelpLog(gameKey);
+
+  if (gameKey === "matching") gameMatching();
+  if (gameKey === "flip") gameFlip();
+  if (gameKey === "scrambled") gameScrambled();
+  if (gameKey === "typing") gameTyping();
+  if (gameKey === "hint") gameHint();
+}
+
+/* ---------- Scoring ---------- */
+function addXP(amount){ PLAY.xpDelta += Math.max(0, amount|0); }
+function addGold(amount){ PLAY.goldDelta += (amount|0); }
+function addRating(amount){ PLAY.ratingDelta += (amount|0); }
 
 function finalizeGoldWithHelpPenalty(goldRaw, minGold) {
   let g = goldRaw;
@@ -892,9 +918,8 @@ function finalizeGoldWithHelpPenalty(goldRaw, minGold) {
   g = Math.max(minGold, Math.min(75, g));
   return g;
 }
-
 function awardOnCorrect(baseXP, baseRate, sec, cardLevel) {
-  const F = speedFactorFromGame(sec);
+  const F = speedFactor(sec);
   const L = levelMultiplier(cardLevel);
   const D = difficultyD(STATE.rank);
   addXP(Math.round(baseXP * F * L * (1 + 0.01*STATE.rank.tierIndex)));
@@ -912,167 +937,6 @@ function errorFactorFromErrors(e) {
   return 1.0;
 }
 
-function hasNextGame(){
-  return PLAY.gameQueue.some(g => !PLAY.playedGames.includes(g));
-}
-
-// ✅ (1) إخفاء زر التالي تلقائيًا
-function syncNextGameButton(){
-  if (!hasNextGame() || PLAY.inHint) {
-    $("#btnNextGame").style.display = "none";
-  } else {
-    $("#btnNextGame").style.display = "";
-  }
-}
-
-/* ---------- Perfect game rewards ---------- */
-function applyPerfectGameRewards() {
-  const L = currentAverageLevelMultiplier();
-  const D = difficultyD(STATE.rank);
-
-  // ذهب مثالي (سيُضاعف عبر addGold)
-  addGold(75);
-  PLAY.xpDelta += Math.round(220 * L);
-  PLAY.ratingDelta += Math.round((60 * L) / D);
-
-  AudioFX.beep("coin");
-  updateHUD();
-}
-
-/* ---------- Skip/Help inventory ---------- */
-function consumeSkipOrAskBuy() {
-  if (STATE.inventory.skip <= 0) {
-    AudioFX.beep("bad");
-    openModal("لا يوجد تخطي", "لا تملك تخطي. يمكن شراؤه من المتجر.", [
-      makeBtn("الذهاب للمتجر","btn primary", ()=>{ closeModal(); showView("store"); refreshStoreInv(); }),
-      makeBtn("إغلاق","btn", closeModal)
-    ]);
-    return false;
-  }
-  return true;
-}
-function consumeHelpOrAskBuy() {
-  if (STATE.inventory.help <= 0) {
-    AudioFX.beep("bad");
-    openModal("لا توجد مساعدة", "لا تملك مساعدات. يمكن شراؤها من المتجر.", [
-      makeBtn("الذهاب للمتجر","btn primary", ()=>{ closeModal(); showView("store"); refreshStoreInv(); }),
-      makeBtn("إغلاق","btn", closeModal)
-    ]);
-    return false;
-  }
-  return true;
-}
-
-/* ---------- Games routing ---------- */
-function launchNextGame() {
-  PLAY.usedHelpInGame = false;
-
-  const next = PLAY.gameQueue.find(g => !PLAY.playedGames.includes(g));
-  if (!next) {
-    // ✅ (1) بعد اللعبة الرابعة: اخفِ زر التالي
-    syncNextGameButton();
-    return;
-  }
-  renderGame(next);
-}
-
-function gameTitle(k) {
-  return ({
-    matching: "لعبة التوصيل",
-    flip: "لعبة قلب البطاقات",
-    scrambled: "لعبة ترتيب الحروف",
-    typing: "لعبة الكتابة",
-    hint: "لعبة التلميح"
-  }[k] || "لعبة");
-}
-function gameSubtitle(k) {
-  return ({
-    matching: "اختر نصًا ثم ترجمته. الصحيح يختفي، والخطأ يسمح بإعادة بلا حدود.",
-    flip: "تذكر أماكن النص والترجمة. عرض 5 ثوانٍ ثم قلب.",
-    scrambled: "رتب أحرف النص الصحيح. 30% من بطاقات اليوم.",
-    typing: "اكتب النص الأصلي عند رؤية الترجمة. 30% مختلفة عن ترتيب الحروف.",
-    hint: "التقييم إلزامي لتسجيل الحضور."
-  }[k] || "");
-}
-
-function openHelpLogForCurrentGame(){
-  const g = PLAY.currentGame;
-  if (!g || g === "hint") return;
-  const arr = PLAY.helpHistory[g] || [];
-  if (arr.length === 0) {
-    openModal("سجل المساعدات", "لم تستخدم أي مساعدة في هذه اللعبة.", [makeBtn("إغلاق","btn primary", closeModal)]);
-    return;
-  }
-  openModal("سجل المساعدات", `
-    <div class="muted">اللعبة: <b>${escapeHTML(gameTitle(g))}</b></div>
-    <div class="divider"></div>
-    ${arr.map((x,i)=>`<div class="muted">${i+1}) ${escapeHTML(x)}</div>`).join("")}
-  `, [makeBtn("إغلاق","btn primary", closeModal)]);
-}
-
-function renderGame(gameKey) {
-  $("#gameArea").innerHTML = "";
-  $("#playTitle").textContent = gameTitle(gameKey);
-  $("#playSub").textContent = gameSubtitle(gameKey);
-
-  PLAY.currentGame = gameKey;
-
-  const isHint = (gameKey === "hint");
-
-  $("#btnSkip").style.display = !isHint ? "" : "none";
-  $("#btnHelp").style.display = !isHint ? "" : "none";
-  $("#btnHelpLog").style.display = !isHint ? "" : "none";
-
-  // ✅ (1) حافظ على حالة زر التالي
-  syncNextGameButton();
-
-  $("#btnHelpLog").onclick = () => {
-    AudioFX.beep("click");
-    openHelpLogForCurrentGame();
-  };
-
-  $("#btnSkip").onclick = () => {
-    if (isHint) return;
-    if (!consumeSkipOrAskBuy()) return;
-
-    openModal("تأكيد التخطي", "هل تريد تخطي هذه اللعبة والحصول على مكاسب مثالية؟", [
-      makeBtn("إلغاء","btn", closeModal),
-      makeBtn("نعم","btn primary", () => {
-        closeModal();
-        STATE.inventory.skip -= 1;
-        applyPerfectGameRewards();
-        PLAY.playedGames.push(gameKey);
-        saveState(STATE);
-        afterGameFinished(gameKey);
-      })
-    ]);
-  };
-
-  $("#btnHelp").onclick = () => {
-    if (isHint) return;
-    if (!consumeHelpOrAskBuy()) return;
-
-    STATE.inventory.help -= 1;
-    PLAY.usedHelpInGame = true;
-    saveState(STATE);
-    refreshStoreInv();
-
-    // ✅ (2) تسجّل المساعدة ضمن سجل اللعبة الحالية
-    if (gameKey === "matching") matchingHelp(true);
-    if (gameKey === "flip") flipHelp(true);
-    if (gameKey === "scrambled") scrambledHelp(true);
-    if (gameKey === "typing") typingHelp(true);
-
-    AudioFX.beep("click");
-  };
-
-  if (gameKey === "matching") gameMatching();
-  if (gameKey === "flip") gameFlip();
-  if (gameKey === "scrambled") gameScrambled();
-  if (gameKey === "typing") gameTyping();
-  if (gameKey === "hint") gameHint();
-}
-
 /* ---------- Matching ---------- */
 let MATCH = null;
 
@@ -1085,7 +949,7 @@ function gameMatching() {
   });
 
   const board = document.createElement("div");
-  board.className = "gridBoard";
+  board.className = "grid";
   $("#gameArea").appendChild(board);
 
   MATCH = {
@@ -1142,7 +1006,7 @@ function matchingClick(t, el) {
     MATCH.correct++;
 
     awardOnCorrect(12, 6, dt, Math.max(first.level, t.level));
-    const F = speedFactorFromGame(dt);
+    const F = speedFactor(dt);
     const L = levelMultiplier(Math.max(first.level, t.level));
     MATCH.goldRaw += (3 * F * L);
 
@@ -1175,7 +1039,6 @@ function finishMatching() {
   AudioFX.beep("coin");
 
   PLAY.playedGames.push("matching");
-  syncNextGameButton();
   afterGameFinished("matching");
 }
 
@@ -1191,7 +1054,7 @@ function gameFlip() {
   });
 
   const board = document.createElement("div");
-  board.className = "gridBoard";
+  board.className = "grid";
   $("#gameArea").appendChild(board);
 
   FLIP = {
@@ -1205,7 +1068,8 @@ function gameFlip() {
     goldRaw: 0,
   };
 
-  FLIP.tiles.forEach(t => {
+  // show 5 seconds
+  tiles.forEach(t => {
     const el = document.createElement("div");
     el.className = "tile";
     el.dataset.id = t.id;
@@ -1262,7 +1126,7 @@ function flipClick(t, el) {
         FLIP.lastMatchAt = performance.now();
 
         const sec = dt;
-        const F = speedFactorFromGame(sec);
+        const F = speedFactor(sec);
         const L = levelMultiplier(Math.max(a.t.level, b.t.level));
         const D = difficultyD(STATE.rank);
 
@@ -1302,7 +1166,6 @@ function finishFlip() {
   AudioFX.beep("coin");
 
   PLAY.playedGames.push("flip");
-  syncNextGameButton();
   afterGameFinished("flip");
 }
 
@@ -1312,7 +1175,6 @@ let SCR = null;
 function gameScrambled() {
   const ids = PLAY.scrambledIds;
   const cards = ids.map(id => STATE.cards[id]).filter(Boolean);
-
   SCR = { cards, idx: 0, errors: 0, correct: 0, goldRaw: 0, lastAt: performance.now(), answer: "" };
   renderScrambledCard();
 }
@@ -1329,18 +1191,18 @@ function renderScrambledCard() {
   const shuffled = shuffle(chars);
   SCR.answer = "";
 
-  const wrap = document.createElement("div");
-  wrap.className = "scrambleWrap";
-  wrap.innerHTML = `
+  const box = document.createElement("div");
+  box.className = "wordBox";
+  box.innerHTML = `
     <div class="muted">بطاقة ${SCR.idx+1} من ${SCR.cards.length}</div>
-    <div class="answerBox" id="scrAnswer"></div>
-    <div class="letterRow" id="scrLetters"></div>
-    <div class="centerRow">
-      <button class="btn primary" id="scrOk"><span class="material-symbols-rounded">check</span>موافق</button>
-      <button class="btn" id="scrClear"><span class="material-symbols-rounded">backspace</span>مسح</button>
+    <div class="answerLine" id="scrAnswer"></div>
+    <div class="lettersRow" id="scrLetters"></div>
+    <div class="rowActions" style="margin-top:12px">
+      <button class="btn btn--primary" id="scrOk"><span class="material-icons">check</span> موافق</button>
+      <button class="btn" id="scrClear"><span class="material-icons">backspace</span> مسح</button>
     </div>
   `;
-  area.appendChild(wrap);
+  area.appendChild(box);
 
   const ansEl = $("#scrAnswer");
   const lettersEl = $("#scrLetters");
@@ -1373,7 +1235,7 @@ function renderScrambledCard() {
     if (SCR.answer === original) {
       SCR.correct++;
       awardOnCorrect(14, 7, dt, c.level);
-      const F = speedFactorFromGame(dt);
+      const F = speedFactor(dt);
       const L = levelMultiplier(c.level);
       SCR.goldRaw += (4 * F * L);
 
@@ -1386,7 +1248,9 @@ function renderScrambledCard() {
       awardOnWrong(2, 9, c.level, errorFactorFromErrors(SCR.errors));
       AudioFX.beep("bad");
       updateHUD();
-      openModal("غير صحيح", "الترتيب غير صحيح. حاول مرة أخرى.", [makeBtn("حسنًا","btn primary", closeModal)]);
+      openModal("غير صحيح", "الترتيب غير صحيح. حاول مرة أخرى.", [
+        makeBtn("حسنًا","btn btn--primary", closeModal)
+      ]);
     }
   };
 }
@@ -1407,19 +1271,11 @@ function finishScrambled() {
   AudioFX.beep("coin");
 
   PLAY.playedGames.push("scrambled");
-  syncNextGameButton();
   afterGameFinished("scrambled");
 }
 
 /* ---------- Typing ---------- */
 let TYP = null;
-
-function normalizeTextForTyping(s){
-  return String(s ?? "")
-    .trim()
-    .replace(/\s+/g, " ")
-    .toLowerCase();
-}
 
 function gameTyping() {
   const ids = PLAY.typingIds;
@@ -1435,21 +1291,22 @@ function renderTypingCard() {
   if (TYP.idx >= TYP.cards.length) return finishTyping();
 
   const c = TYP.cards[TYP.idx];
-  const wrap = document.createElement("div");
-  wrap.innerHTML = `
+  const box = document.createElement("div");
+  box.className = "wordBox";
+  box.innerHTML = `
     <div class="muted">بطاقة ${TYP.idx+1} من ${TYP.cards.length}</div>
-    <div class="bigText">${escapeHTML(c.native)}</div>
+    <div style="margin-top:10px; font-weight:900; font-size:18px; overflow-wrap:anywhere">${escapeHTML(c.native)}</div>
     <div class="divider"></div>
-    <div class="field">
-      <label>اكتب النص الأصلي</label>
+    <div class="typingBox">
+      <div class="muted" style="font-weight:900">اكتب النص الأصلي</div>
       <input id="typeIn" placeholder="اكتب هنا..." />
-      <div class="tiny">المقارنة تتجاهل حالة الأحرف والفراغات قبل/بعد وتكرار الفراغات.</div>
+      <div class="muted tiny">المقارنة حرف بحرف وتشمل الرموز.</div>
     </div>
-    <div class="centerRow">
-      <button class="btn primary" id="typeOk"><span class="material-symbols-rounded">check</span>موافق</button>
+    <div class="rowActions" style="margin-top:12px">
+      <button class="btn btn--primary" id="typeOk"><span class="material-icons">check</span> موافق</button>
     </div>
   `;
-  area.appendChild(wrap);
+  area.appendChild(box);
 
   const input = $("#typeIn");
   input.focus();
@@ -1458,14 +1315,11 @@ function renderTypingCard() {
     const dt = (performance.now() - TYP.lastAt)/1000;
     TYP.lastAt = performance.now();
 
-    // ✅ (3) تجاهل case + trim + تعدد الفراغات
-    const v = normalizeTextForTyping(input.value);
-    const target = normalizeTextForTyping(c.foreign);
-
-    if (v === target) {
+    const v = input.value;
+    if (v === c.foreign) {
       TYP.correct++;
       awardOnCorrect(16, 8, dt, c.level);
-      const F = speedFactorFromGame(dt);
+      const F = speedFactor(dt);
       const L = levelMultiplier(c.level);
       TYP.goldRaw += (5 * F * L);
 
@@ -1478,7 +1332,9 @@ function renderTypingCard() {
       awardOnWrong(2, 10, c.level, errorFactorFromErrors(TYP.errors));
       AudioFX.beep("bad");
       updateHUD();
-      openModal("غير صحيح", "المحتوى غير صحيح. حاول مرة أخرى.", [makeBtn("حسنًا","btn primary", closeModal)]);
+      openModal("غير صحيح", "المحتوى غير صحيح. حاول مرة أخرى.", [
+        makeBtn("حسنًا","btn btn--primary", closeModal)
+      ]);
     }
   };
 }
@@ -1499,28 +1355,49 @@ function finishTyping() {
   AudioFX.beep("coin");
 
   PLAY.playedGames.push("typing");
-  syncNextGameButton();
   afterGameFinished("typing");
 }
 
-/* ---------- Help effects + logging ---------- */
-function matchingHelp(logIt=false) {
+/* ---------- Help effects + log ---------- */
+function logHelp(game, text){
+  if (!PLAY?.helpLogs?.[game]) return;
+  PLAY.helpLogs[game].push({ at: Date.now(), text });
+}
+function showHelpLog(game){
+  if (!PLAY || !PLAY.helpLogs) return;
+  const items = (PLAY.helpLogs[game] || []);
+  if (!items.length) {
+    openModal("سجل المساعدات", "لا توجد مساعدات مستخدمة في هذه اللعبة.", [
+      makeBtn("إغلاق","btn btn--primary", closeModal)
+    ]);
+    return;
+  }
+  const html = items.map((it, i)=>`
+    <div class="modalRow">
+      <div style="font-weight:900">#${i+1}</div>
+      <div class="muted" style="margin-top:6px">${escapeHTML(it.text)}</div>
+    </div>
+  `).join("");
+  openModal("سجل المساعدات", html, [
+    makeBtn("إغلاق","btn btn--primary", closeModal)
+  ]);
+}
+
+function matchingHelp() {
   const remaining = PLAY.cards.filter(c => !STATE.ignoreList[c.id]);
   if (!remaining.length) return;
   const pick = remaining[Math.floor(Math.random()*remaining.length)];
-
   const tiles = $$("#gameArea .tile").filter(t => !t.classList.contains("gone"));
   const a = tiles.find(x => x.textContent === pick.foreign);
   const b = tiles.find(x => x.textContent === pick.native);
 
+  logHelp("matching", `تم تمييز زوج: "${pick.foreign}" ↔ "${pick.native}"`);
   if (a) a.classList.add("sel");
   if (b) b.classList.add("sel");
   setTimeout(()=>{ if(a) a.classList.remove("sel"); if(b) b.classList.remove("sel"); }, 900);
-
-  if (logIt) PLAY.helpHistory.matching.push(`تلميح زوج: "${pick.foreign}" ↔ "${pick.native}"`);
 }
 
-function flipHelp(logIt=false) {
+function flipHelp() {
   const tiles = $$("#gameArea .tile");
   tiles.forEach(el => {
     const id = el.dataset.id;
@@ -1530,6 +1407,9 @@ function flipHelp(logIt=false) {
     el.classList.remove("back");
     el.textContent = t.text;
   });
+
+  logHelp("flip", "تم كشف البطاقات مؤقتًا لمدة 1.5 ثانية.");
+
   setTimeout(()=>{
     tiles.forEach(el => {
       const id = el.dataset.id;
@@ -1541,59 +1421,54 @@ function flipHelp(logIt=false) {
       el.textContent = "✦";
     });
   }, 1500);
-
-  if (logIt) PLAY.helpHistory.flip.push("عرض سريع لجميع البطاقات لمدة 1.5 ثانية.");
 }
 
-function scrambledHelp(logIt=false) {
+function scrambledHelp() {
   const c = SCR?.cards?.[SCR.idx];
   if (!c) return;
   const next = c.foreign.charAt(SCR.answer.length);
-
-  openModal("مساعدة", `الحرف التالي: <b>${escapeHTML(next || "")}</b>`, [makeBtn("حسنًا","btn primary", closeModal)]);
-  if (logIt) PLAY.helpHistory.scrambled.push(`الحرف التالي كان: "${next || ""}"`);
+  logHelp("scrambled", `الحرف التالي: ${next || "(لا يوجد)"}`);
+  openModal("مساعدة", `الحرف التالي: <b>${escapeHTML(next || "")}</b>`, [
+    makeBtn("حسنًا","btn btn--primary", closeModal)
+  ]);
 }
 
-function typingHelp(logIt=false) {
+function typingHelp() {
   const c = TYP?.cards?.[TYP.idx];
   if (!c) return;
   const input = $("#typeIn");
   if (!input) return;
-
-  const typed = input.value || "";
+  const typed = input.value;
   const next = c.foreign.charAt(typed.length);
-
-  openModal("مساعدة", `الحرف التالي: <b>${escapeHTML(next || "")}</b>`, [makeBtn("حسنًا","btn primary", closeModal)]);
-  if (logIt) PLAY.helpHistory.typing.push(`الحرف التالي كان: "${next || ""}"`);
+  logHelp("typing", `الحرف التالي: ${next || "(لا يوجد)"}`);
+  openModal("مساعدة", `الحرف التالي: <b>${escapeHTML(next || "")}</b>`, [
+    makeBtn("حسنًا","btn btn--primary", closeModal)
+  ]);
 }
 
 /* ---------- After game finished ---------- */
 function afterGameFinished(gameKey) {
   const done4 = ["matching","flip","scrambled","typing"].every(g => PLAY.playedGames.includes(g));
-  syncNextGameButton();
-
-  const btns = [];
-
-  // ✅ (1) بعد اللعبة الرابعة: لا زر "اللعبة التالية" في النافذة
-  if (!done4 && hasNextGame()) {
-    btns.push(makeBtn("اللعبة التالية","btn primary", () => {
-      closeModal();
-      launchNextGame();
-    }));
-  }
-
-  btns.push(makeBtn("تقييم البطاقات","btn primary alt", () => {
-    closeModal();
-    goToHint();
-  }));
+  if (done4) $("#btnNextGame").style.display = "none";
 
   openModal("تم إنهاء اللعبة", `
-    <div class="muted">اللعبة: <b>${escapeHTML(gameTitle(gameKey))}</b></div>
-    <div class="muted">يمكنك الانتقال لتقييم البطاقات، أو متابعة الألعاب المتبقية إن وجدت.</div>
-  `, btns);
+    <div class="modalRow">
+      <div class="muted">اللعبة: <b>${escapeHTML(gameTitle(gameKey))}</b></div>
+      <div class="muted" style="margin-top:8px">يمكنك اختيار اللعبة التالية أو الانتقال لتقييم البطاقات.</div>
+    </div>
+  `, [
+    makeBtn(`<span class="material-icons">sports_esports</span> اللعبة التالية`, "btn btn--primary", () => {
+      closeModal();
+      if (!done4) launchNextGame();
+    }),
+    makeBtn(`<span class="material-icons">task_alt</span> تقييم البطاقات`, "btn btn--primary", () => {
+      closeModal();
+      goToHint();
+    })
+  ]);
 }
 
-/* ---------- Hint (mandatory attendance) ---------- */
+/* ---------- Hint ---------- */
 function goToHint() { renderGame("hint"); }
 
 function gameHint() {
@@ -1602,8 +1477,8 @@ function gameHint() {
 
   $("#btnNextGame").style.display = "none";
   $("#btnGoHint").style.display = "none";
-  $("#btnSkip").style.display = "none";
-  $("#btnHelp").style.display = "none";
+  $("#btnUseSkip").style.display = "none";
+  $("#btnUseHelp").style.display = "none";
   $("#btnHelpLog").style.display = "none";
 
   PLAY.hintIndex = 0;
@@ -1620,28 +1495,35 @@ function renderHintCard() {
   const c = cards[PLAY.hintIndex];
 
   const wrap = document.createElement("div");
+  wrap.className = "hintWrap";
   wrap.innerHTML = `
-    <div class="muted">بطاقة ${PLAY.hintIndex+1} من ${cards.length}</div>
-    <div class="divider"></div>
-    <div class="bigText">${escapeHTML(c.hint)}</div>
-    <div class="centerRow" style="margin-top:10px">
-      <div class="muted" style="font-weight:1000">هل عرفتها؟</div>
-      <button class="btn primary" id="btnReveal"><span class="material-symbols-rounded">visibility</span>عرض</button>
-    </div>
-    <div id="revealBox" class="field" style="display:none; margin-top:10px">
-      <div class="muted">النص: <b>${escapeHTML(c.foreign)}</b></div>
-      <div class="muted">الترجمة: <b>${escapeHTML(c.native)}</b></div>
-    </div>
-    <div class="rateRow">
-      <button class="rateBtn good" id="rateEasy">سهل</button>
-      <button class="rateBtn mid" id="rateMid">متوسط</button>
-      <button class="rateBtn bad" id="rateHard">صعب</button>
+    <div class="hintCard">
+      <div class="muted">بطاقة ${PLAY.hintIndex+1} من ${cards.length}</div>
+      <div class="divider"></div>
+      <div class="hintText">${escapeHTML(c.hint)}</div>
+      <div class="rowActions" style="justify-content:center; margin-top:12px">
+        <div class="muted" style="font-weight:900">هل عرفتها؟</div>
+        <button class="btn btn--primary" id="btnReveal">
+          <span class="material-icons">visibility</span> عرض
+        </button>
+      </div>
+      <div id="revealBox" class="reveal">
+        <div class="revealRow">
+          <div>النص: <b>${escapeHTML(c.foreign)}</b></div>
+          <div>الترجمة: <b>${escapeHTML(c.native)}</b></div>
+        </div>
+      </div>
+      <div class="rateRow">
+        <button class="btn btn--primary" id="rateEasy">سهل</button>
+        <button class="btn" id="rateMid">متوسط</button>
+        <button class="btn btn--danger" id="rateHard">صعب</button>
+      </div>
     </div>
   `;
   area.appendChild(wrap);
 
   $("#btnReveal").onclick = () => {
-    $("#revealBox").style.display = "";
+    $("#revealBox").classList.add("open");
     AudioFX.beep("click");
   };
 
@@ -1684,14 +1566,16 @@ function finishHintAll() {
   AudioFX.beep("rank");
 
   openModal("انتهى الدرس", `
-    <div class="bigText">تم تسجيل الحضور.</div>
-    <div class="divider"></div>
-    <div class="muted">ذهب: <b>${PLAY.goldDelta}</b></div>
-    <div class="muted">XP: <b>${PLAY.xpDelta}</b></div>
-    <div class="muted">تقييم: <b>${PLAY.ratingDelta}</b></div>
-    <div class="muted">يمكنك إعادة اللعب اليوم للحصول على إحصائيات جديدة، وآخر تقييم هو المعتمد.</div>
+    <div class="modalRow">
+      <div style="font-weight:900; font-size:18px">تم تسجيل الحضور.</div>
+      <div class="divider"></div>
+      <div class="muted">ذهب: <b>${PLAY.goldDelta}</b></div>
+      <div class="muted">XP: <b>${PLAY.xpDelta}</b></div>
+      <div class="muted">تقييم: <b>${PLAY.ratingDelta}</b></div>
+      <div class="muted" style="margin-top:10px">يمكنك إعادة اللعب اليوم للحصول على إحصائيات جديدة، وآخر تقييم هو المعتمد.</div>
+    </div>
   `, [
-    makeBtn("العودة للرئيسية","btn primary", () => {
+    makeBtn(`<span class="material-icons">home</span> العودة للرئيسية`, "btn btn--primary", () => {
       closeModal();
       endPlay(true);
     })
@@ -1700,20 +1584,18 @@ function finishHintAll() {
 
 /* ---------- Exit play ---------- */
 function cancelLesson() {
+  if (!PLAY) return;
   PLAY.goldDelta = 0;
   PLAY.xpDelta = 0;
   PLAY.ratingDelta = 0;
 }
-
 function endPlay(goHome=false) {
   stopTimer();
   PLAY = null;
   showView("home");
-  refreshTopbar();
   if (goHome) return;
 }
-
-function handleExitPlay() {
+function handleAbortLesson() {
   if (PLAY && !PLAY.completedHintAll) {
     cancelLesson();
     STATE.meta.lastActivity = "تم إلغاء الدرس لعدم إكمال تقييم البطاقات.";
@@ -1726,12 +1608,16 @@ function handleExitPlay() {
 function buyExtraCard() {
   if (STATE.inventory.extraCardsBought >= 2) {
     AudioFX.beep("bad");
-    openModal("تنبيه","وصلت للحد اليومي لشراء البطاقات الإضافية (2).",[makeBtn("إغلاق","btn",closeModal)]);
+    openModal("تنبيه","وصلت للحد اليومي لشراء البطاقات الإضافية (2).",[
+      makeBtn("إغلاق","btn btn--primary",closeModal)
+    ]);
     return;
   }
   if (STATE.wallet.gold < 100) {
     AudioFX.beep("bad");
-    openModal("لا يكفي ذهب","تحتاج 100 ذهب.",[makeBtn("إغلاق","btn",closeModal)]);
+    openModal("لا يكفي ذهب","تحتاج 100 ذهب.",[
+      makeBtn("إغلاق","btn btn--primary",closeModal)
+    ]);
     return;
   }
   STATE.wallet.gold -= 100;
@@ -1739,13 +1625,14 @@ function buyExtraCard() {
   STATE.meta.lastActivity = "تم شراء بطاقة إضافية لليوم.";
   saveState(STATE);
   AudioFX.beep("coin");
-  refreshTopbar(); refreshStoreInv(); refreshAddView();
+  refreshHUD();
 }
-
 function buySkip() {
   if (STATE.wallet.gold < 900) {
     AudioFX.beep("bad");
-    openModal("لا يكفي ذهب","تحتاج 900 ذهب.",[makeBtn("إغلاق","btn",closeModal)]);
+    openModal("لا يكفي ذهب","تحتاج 900 ذهب.",[
+      makeBtn("إغلاق","btn btn--primary",closeModal)
+    ]);
     return;
   }
   STATE.wallet.gold -= 900;
@@ -1753,13 +1640,14 @@ function buySkip() {
   STATE.meta.lastActivity = "تم شراء تخطي.";
   saveState(STATE);
   AudioFX.beep("coin");
-  refreshTopbar(); refreshStoreInv();
+  refreshHUD();
 }
-
 function buyHelp() {
   if (STATE.wallet.gold < 150) {
     AudioFX.beep("bad");
-    openModal("لا يكفي ذهب","تحتاج 150 ذهب.",[makeBtn("إغلاق","btn",closeModal)]);
+    openModal("لا يكفي ذهب","تحتاج 150 ذهب.",[
+      makeBtn("إغلاق","btn btn--primary",closeModal)
+    ]);
     return;
   }
   STATE.wallet.gold -= 150;
@@ -1767,13 +1655,14 @@ function buyHelp() {
   STATE.meta.lastActivity = "تم شراء مساعدة.";
   saveState(STATE);
   AudioFX.beep("coin");
-  refreshTopbar(); refreshStoreInv();
+  refreshHUD();
 }
-
 function buyFuel() {
   if (STATE.wallet.gold < 250) {
     AudioFX.beep("bad");
-    openModal("لا يكفي ذهب","تحتاج 250 ذهب.",[makeBtn("إغلاق","btn",closeModal)]);
+    openModal("لا يكفي ذهب","تحتاج 250 ذهب.",[
+      makeBtn("إغلاق","btn btn--primary",closeModal)
+    ]);
     return;
   }
   STATE.wallet.gold -= 250;
@@ -1781,22 +1670,19 @@ function buyFuel() {
   STATE.meta.lastActivity = "تم شراء وقود.";
   saveState(STATE);
   AudioFX.beep("coin");
-  refreshTopbar(); refreshStoreInv();
+  refreshHUD();
 }
 
 /* ---------- Start play ---------- */
 function handleStartPlay() {
-  ensureDayRollover();
-
   const cards = buildLessonCards();
   if (cards.length === 0) {
     AudioFX.beep("bad");
     openModal("تنبيه", "لم تقم بإضافة بطاقات لعب لهذا اليوم، قم بإضافة بطاقات جديدة وعد غدًا", [
-      makeBtn("موافق","btn primary", closeModal)
+      makeBtn("موافق","btn btn--primary", closeModal)
     ]);
     return;
   }
-
   checkOverdueModal();
   startLesson();
 }
@@ -1808,11 +1694,10 @@ function exportJSON() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "memorize_backup.json";
+  a.download = "memoquest_backup.json";
   a.click();
   URL.revokeObjectURL(url);
 }
-
 function importJSON(file) {
   const reader = new FileReader();
   reader.onload = () => {
@@ -1823,16 +1708,20 @@ function importJSON(file) {
       saveState(STATE);
       refreshAll();
       AudioFX.beep("ok");
-      openModal("تم", "تم الاستيراد بنجاح.", [makeBtn("إغلاق","btn primary", closeModal)]);
+      openModal("تم", "تم الاستيراد بنجاح.", [
+        makeBtn("إغلاق","btn btn--primary", closeModal)
+      ]);
     }catch{
       AudioFX.beep("bad");
-      openModal("خطأ", "ملف غير صالح.", [makeBtn("إغلاق","btn", closeModal)]);
+      openModal("خطأ", "ملف غير صالح.", [
+        makeBtn("إغلاق","btn btn--primary", closeModal)
+      ]);
     }
   };
   reader.readAsText(file);
 }
 
-/* ---------- If user tries to bypass add-lock by closing/refreshing ---------- */
+/* ---------- Before unload rules ---------- */
 function enforceAddLockOnUnload() {
   window.addEventListener("beforeunload", () => {
     if (addLockActiveToday()) {
@@ -1846,58 +1735,71 @@ function enforceAddLockOnUnload() {
       STATE.meta.lastActivity = "تم حذف إضافة اليوم غير المكتملة بسبب الخروج قبل 4 بطاقات.";
       saveState(STATE);
     }
+    // إذا خرج أثناء الدرس قبل التلميح: إلغاء المكافآت (غياب يُحتسب حسب نظامك عند عدم إنهاء التلميح)
+    if (PLAY && !PLAY.completedHintAll) {
+      cancelLesson();
+      STATE.meta.lastActivity = "تم إلغاء الدرس لعدم إكمال تقييم البطاقات.";
+      saveState(STATE);
+    }
   });
 }
 
 /* ---------- Wire UI ---------- */
 function wireUI() {
-  $("#btnStart").onclick = () => { AudioFX.beep("click"); handleStartPlay(); };
-  $("#btnAdd").onclick = () => { AudioFX.beep("click"); showView("add"); };
-  $("#btnStore").onclick = () => { AudioFX.beep("click"); showView("store"); refreshStoreInv(); };
-  $("#btnCards").onclick = () => { AudioFX.beep("click"); showView("cards"); refreshCardsView(); };
+  // Nav
+  $$(".nav__btn").forEach(b => {
+    b.onclick = () => {
+      AudioFX.beep("click");
+      showView(b.dataset.view);
+    };
+  });
 
-  $("#btnBackFromAdd").onclick = () => { AudioFX.beep("click"); confirmExitAddView(); };
+  // Home
+  $("#btnStartPlay").onclick = () => { AudioFX.beep("click"); handleStartPlay(); };
+  $("#btnQuickAdd").onclick = () => { AudioFX.beep("click"); showView("add"); };
+
+  // Add
   $("#btnSaveCard").onclick = () => { AudioFX.beep("click"); saveNewCard(); };
+  $("#btnExitAdd").onclick = () => { AudioFX.beep("click"); confirmExitAddView(); };
 
-  ["#inForeign","#inNative","#inHint"].forEach(id=>{
+  ["#inFront","#inBack","#inHint"].forEach(id=>{
     $(id).addEventListener("input", () => setLockOnAnyInput());
   });
 
-  $("#btnBackFromStore").onclick = () => { AudioFX.beep("click"); showView("home"); };
-  $("#buyExtraCard").onclick = () => { AudioFX.beep("click"); buyExtraCard(); };
-  $("#buySkip").onclick = () => { AudioFX.beep("click"); buySkip(); };
-  $("#buyHelp").onclick = () => { AudioFX.beep("click"); buyHelp(); };
-  $("#buyFuel").onclick = () => { AudioFX.beep("click"); buyFuel(); };
+  // Store
+  $("#view-store").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-buy]");
+    if (!btn) return;
+    AudioFX.beep("click");
+    const k = btn.getAttribute("data-buy");
+    if (k === "extraCard") buyExtraCard();
+    if (k === "skip") buySkip();
+    if (k === "help") buyHelp();
+    if (k === "fuel") buyFuel();
+  });
 
-  $("#btnBackFromCards").onclick = () => { AudioFX.beep("click"); showView("home"); };
-  $("#cardSearch").addEventListener("input", (e)=> refreshCardsView(e.target.value));
+  // Cards
+  $("#cardsSearch").addEventListener("input", (e)=> refreshCardsList(e.target.value));
   $("#btnExport").onclick = () => { AudioFX.beep("click"); exportJSON(); };
-  $("#btnImport").onclick = () => { AudioFX.beep("click"); $("#importFile").click(); };
   $("#importFile").addEventListener("change", (e)=> {
     const f = e.target.files?.[0];
     if (f) importJSON(f);
     e.target.value = "";
   });
 
-  $("#btnExitPlay").onclick = () => { AudioFX.beep("click"); handleExitPlay(); };
-
-  // ✅ (1) زر التالي لا يعمل إلا إذا فيه لعبة
-  $("#btnNextGame").onclick = () => {
-    AudioFX.beep("click");
-    if (!hasNextGame()) {
-      syncNextGameButton();
-      return;
-    }
-    launchNextGame();
-  };
-
+  // Game
+  $("#btnAbortLesson").onclick = () => { AudioFX.beep("click"); handleAbortLesson(); };
+  $("#btnNextGame").onclick = () => { AudioFX.beep("click"); launchNextGame(); };
   $("#btnGoHint").onclick = () => { AudioFX.beep("click"); goToHint(); };
 
+  // Help ? buttons
   $$(".qBtn").forEach(b => {
     b.onclick = () => {
       AudioFX.beep("click");
       const key = b.getAttribute("data-help");
-      openModal("مساعدة", HELP_TEXTS[key] || "لا توجد.", [makeBtn("إغلاق","btn primary", closeModal)]);
+      openModal("مساعدة", HELP_TEXTS[key] || "لا توجد.", [
+        makeBtn("إغلاق","btn btn--primary", closeModal)
+      ]);
     };
   });
 }
@@ -1906,10 +1808,9 @@ function wireUI() {
 function refreshAll() {
   ensureDayRollover();
   getOrCreateTodayGroup();
-  refreshTopbar();
-  refreshStoreInv();
-  refreshAddView();
-  refreshCardsView($("#cardSearch")?.value || "");
+  refreshHUD();
+  refreshTodayList();
+  refreshCardsList($("#cardsSearch")?.value || "");
 }
 
 /* ---------- Init ---------- */
@@ -1920,5 +1821,4 @@ function refreshAll() {
   enforceAddLockOnUnload();
   refreshAll();
   checkOverdueModal();
-  startMidnightWatcher();
 })();
