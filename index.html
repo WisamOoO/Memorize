@@ -1,4 +1,4 @@
-<!-- index.html (Auth) -->
+<!-- index.html -->
 <!doctype html>
 <html lang="ar" dir="rtl">
 <head>
@@ -15,158 +15,457 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div id="authApp">
-    <header class="hud authHud">
-      <div class="hud__left">
-        <div class="brand">
-          <div class="brand__logo">MG</div>
-          <div class="brand__text">
-            <div class="brand__name">Memorize Game</div>
-            <div class="brand__sub">تسجيل الدخول إلزامي لاستخدام التطبيق</div>
+  <div id="app">
+
+    <!-- AUTH GATE (mandatory) -->
+    <main class="authGate view active" id="view-auth">
+      <div class="panel authPanel">
+        <div class="authHeader">
+          <div class="brand brand--auth">
+            <div class="brand__logo">MG</div>
+            <div class="brand__text">
+              <div class="brand__name">Memorize Game</div>
+              <div class="brand__sub muted">يجب تسجيل الدخول لاستخدام التطبيق</div>
+            </div>
           </div>
-        </div>
-      </div>
-    </header>
-
-    <main class="authWrap">
-      <section class="panel authPanel">
-        <div class="panel__head">
-          <h2 id="authTitle">تسجيل الدخول</h2>
-          <div class="muted" id="authSub">اختر الطريقة المناسبة</div>
-        </div>
-
-        <!-- Google -->
-        <div class="authRow" style="margin-top:14px">
-          <button class="btn btn--primary authWide" id="btnGoogle">
-            <span class="material-icons">g_mobiledata</span>
-            المتابعة عبر Google
-          </button>
         </div>
 
         <div class="divider"></div>
 
-        <!-- Login form -->
-        <div id="loginBox">
-          <div class="formGrid authGrid">
+        <div class="authTabs">
+          <button class="authTab active" data-auth-tab="login">تسجيل الدخول</button>
+          <button class="authTab" data-auth-tab="register">إنشاء حساب</button>
+        </div>
+
+        <!-- LOGIN -->
+        <section class="authBox active" id="auth-login">
+          <div class="formGrid formGrid--auth">
             <div class="field">
               <label>البريد الإلكتروني</label>
-              <input id="loginEmail" type="email" placeholder="name@example.com" autocomplete="email" />
+              <input id="loginEmail" inputmode="email" autocomplete="email" placeholder="example@mail.com" />
             </div>
             <div class="field">
               <label>كلمة المرور</label>
-              <input id="loginPass" type="password" placeholder="••••••••" autocomplete="current-password" />
+              <input id="loginPass" type="password" autocomplete="current-password" placeholder="••••••••" />
             </div>
           </div>
 
           <div class="rowActions" style="margin-top:12px">
             <button class="btn btn--primary" id="btnLogin">
-              <span class="material-icons">login</span>
-              دخول
+              <span class="material-icons">login</span> دخول
             </button>
-            <button class="btn btn--ghost" id="btnGoRegister">
-              <span class="material-icons">person_add</span>
-              إنشاء حساب
+            <button class="btn" id="btnGoogle">
+              <span class="material-icons">g_mobiledata</span> دخول عبر Google
             </button>
-            <button class="btn btn--ghost" id="btnGoReset">
-              <span class="material-icons">lock_reset</span>
-              نسيت كلمة المرور
+            <button class="btn btn--ghost" id="btnForgot">
+              <span class="material-icons">help</span> نسيت كلمة المرور؟
             </button>
           </div>
-        </div>
 
-        <!-- Register form -->
-        <div id="registerBox" style="display:none">
-          <div class="formGrid authGrid">
+          <div class="muted tiny" id="loginMsg">—</div>
+
+          <div class="divider"></div>
+
+          <div class="verifyBox" id="verifyBox" style="display:none">
+            <div class="modalRow">
+              <div style="font-weight:900">حسابك غير مُفعّل</div>
+              <div class="muted" style="margin-top:6px">
+                تم إرسال رسالة تحقق إلى بريدك. فعّل الحساب ثم أعد تسجيل الدخول.
+              </div>
+              <div class="choiceRow" style="margin-top:10px">
+                <button class="btn btn--primary btn--small" id="btnResendVerify">
+                  <span class="material-icons">mark_email_unread</span> إعادة إرسال التفعيل
+                </button>
+                <button class="btn btn--small" id="btnLogoutFromVerify">
+                  <span class="material-icons">logout</span> تسجيل خروج
+                </button>
+              </div>
+              <div class="muted tiny" id="verifyMsg">—</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- REGISTER -->
+        <section class="authBox" id="auth-register">
+          <div class="formGrid formGrid--auth">
             <div class="field">
               <label>الاسم</label>
-              <input id="regName" placeholder="اسمك داخل اللعبة" autocomplete="name" maxlength="30" />
-              <div class="field__sub">سيظهر في الواجهة الرئيسية بدل البريد</div>
+              <input id="regName" autocomplete="name" placeholder="اكتب اسمك" maxlength="24" />
+              <div class="field__sub">سيظهر هذا الاسم في الشاشة الرئيسية</div>
             </div>
             <div class="field">
               <label>البريد الإلكتروني</label>
-              <input id="regEmail" type="email" placeholder="name@example.com" autocomplete="email" />
+              <input id="regEmail" inputmode="email" autocomplete="email" placeholder="example@mail.com" />
             </div>
             <div class="field">
               <label>كلمة المرور</label>
-              <input id="regPass" type="password" placeholder="••••••••" autocomplete="new-password" />
-              <div class="field__sub" id="passRuleHint">الحد الأدنى 8 أحرف، ويُفضّل وجود حروف + أرقام، وتجنّب أرقام متتالية.</div>
+              <input id="regPass" type="password" autocomplete="new-password" placeholder="••••••••" />
+              <div class="field__sub" id="passRules">
+                8 أحرف على الأقل، لا تسلسلات رقمية (مثل 1234)، لا تكرار نفس الحرف كثيرًا.
+              </div>
             </div>
             <div class="field">
               <label>تأكيد كلمة المرور</label>
-              <input id="regPass2" type="password" placeholder="••••••••" autocomplete="new-password" />
+              <input id="regPass2" type="password" autocomplete="new-password" placeholder="••••••••" />
             </div>
           </div>
 
           <div class="rowActions" style="margin-top:12px">
             <button class="btn btn--primary" id="btnRegister">
-              <span class="material-icons">how_to_reg</span>
-              إنشاء الحساب
-            </button>
-            <button class="btn btn--ghost" id="btnGoLogin1">
-              <span class="material-icons">arrow_back</span>
-              العودة للدخول
+              <span class="material-icons">person_add</span> إنشاء حساب
             </button>
           </div>
 
-          <div class="divider"></div>
-          <div class="muted tiny">
-            ملاحظة: بعد إنشاء الحساب سيتم إرسال رابط تأكيد للبريد. لن تتمكن من الدخول قبل تأكيد البريد.
-          </div>
-        </div>
-
-        <!-- Reset form -->
-        <div id="resetBox" style="display:none">
-          <div class="field" style="margin-top:14px">
-            <label>البريد الإلكتروني</label>
-            <input id="resetEmail" type="email" placeholder="name@example.com" autocomplete="email" />
-            <div class="field__sub">سيتم إرسال رابط لتغيير كلمة المرور</div>
-          </div>
-
-          <div class="rowActions" style="margin-top:12px">
-            <button class="btn btn--primary" id="btnReset">
-              <span class="material-icons">send</span>
-              إرسال رابط التغيير
-            </button>
-            <button class="btn btn--ghost" id="btnGoLogin2">
-              <span class="material-icons">arrow_back</span>
-              العودة للدخول
-            </button>
-          </div>
-        </div>
-
-        <!-- Verify gate -->
-        <div id="verifyBox" style="display:none">
-          <div class="divider"></div>
-          <div class="modalRow">
-            <div style="font-weight:900">تم إرسال رابط تأكيد البريد.</div>
-            <div class="muted" style="margin-top:6px">
-              افتح بريدك واضغط على رابط التفعيل، ثم اضغط "تحقّق الآن".
-            </div>
-            <div class="rowActions" style="margin-top:12px">
-              <button class="btn btn--primary" id="btnCheckVerified">
-                <span class="material-icons">verified</span>
-                تحقّق الآن
-              </button>
-              <button class="btn btn--ghost" id="btnResendVerify">
-                <span class="material-icons">mark_email_unread</span>
-                إعادة إرسال
-              </button>
-              <button class="btn btn--danger" id="btnLogoutFromVerify">
-                <span class="material-icons">logout</span>
-                تسجيل خروج
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div class="divider"></div>
-        <div class="muted" id="authMsg">—</div>
-      </section>
+          <div class="muted tiny" id="regMsg">—</div>
+        </section>
+      </div>
     </main>
 
-    <div class="modalHost" id="modalHost"></div>
+    <!-- Top HUD -->
+    <header class="hud" id="hudBar" style="display:none">
+      <div class="hud__left">
+        <div class="brand">
+          <div class="brand__logo">MG</div>
+          <div class="brand__text">
+            <div class="brand__name">Memorize Game</div>
+            <div class="brand__sub" id="todayLabel">—</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hud__right">
+        <button class="pill pill--click" id="userPill" type="button" title="الحساب">
+          <span class="material-icons">account_circle</span>
+          <span id="userNameLabel">—</span>
+        </button>
+
+        <div class="pill">
+          <span class="material-icons">paid</span>
+          <span id="goldLabel">0</span>
+        </div>
+        <div class="pill">
+          <span class="material-icons">military_tech</span>
+          <span id="rankLabel">—</span>
+        </div>
+        <div class="pill">
+          <span class="material-icons">stars</span>
+          <span id="xpLabel">LV 1</span>
+        </div>
+        <div class="pill">
+          <span class="material-icons">local_fire_department</span>
+          <span id="streakLabel">0</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Navigation -->
+    <nav class="nav" id="navBar" style="display:none">
+      <button class="nav__btn active" data-view="home">
+        <span class="material-icons">home</span><span>الرئيسية</span>
+      </button>
+      <button class="nav__btn" data-view="add">
+        <span class="material-icons">add_circle</span><span>إضافة</span>
+      </button>
+      <button class="nav__btn" data-view="store">
+        <span class="material-icons">storefront</span><span>المتجر</span>
+      </button>
+      <button class="nav__btn" data-view="cards">
+        <span class="material-icons">style</span><span>البطاقات</span>
+      </button>
+    </nav>
+
+    <!-- Views -->
+    <main class="views" id="mainViews" style="display:none">
+      <!-- HOME -->
+      <section class="view active" id="view-home">
+        <div class="panel hero">
+          <div class="hero__left">
+            <h1>تعلّم مثل لعبة</h1>
+            <p class="muted">
+              العب 4 ألعاب عشوائية ثم قيّم في لعبة التلميح لتسجيل الحضور.
+              <br/>المكافآت تُعتمد فقط بعد إنهاء التلميح بالكامل.
+            </p>
+
+            <div class="hero__actions">
+              <button class="btn btn--primary" id="btnStartPlay">
+                <span class="material-icons">play_circle</span>
+                بدأ اللعب
+              </button>
+
+              <button class="btn" id="btnQuickAdd">
+                <span class="material-icons">add</span>
+                إضافة بطاقة جديدة
+              </button>
+            </div>
+
+            <div class="miniGrid">
+              <div class="miniCard">
+                <div class="miniCard__title">تقدّم XP</div>
+                <div class="progress">
+                  <div class="progress__bar" id="xpBar"></div>
+                </div>
+                <div class="miniCard__sub" id="xpSub">—</div>
+              </div>
+
+              <div class="miniCard">
+                <div class="miniCard__title">تقدّم التصنيف</div>
+                <div class="progress">
+                  <div class="progress__bar" id="rankBar"></div>
+                </div>
+                <div class="miniCard__sub" id="rankSub">—</div>
+              </div>
+
+              <div class="miniCard">
+                <div class="miniCard__title">دروس اليوم</div>
+                <div class="bigNum" id="dueCountLabel">0</div>
+                <div class="miniCard__sub" id="dueSub">—</div>
+              </div>
+
+              <div class="miniCard">
+                <div class="miniCard__title">عناصر</div>
+                <div class="itemsRow">
+                  <span class="chip" id="chipSkip">تخطي: 0</span>
+                  <span class="chip" id="chipHelp">مساعدة: 0</span>
+                  <span class="chip" id="chipFuel">وقود: 0</span>
+                </div>
+                <div class="miniCard__sub">تُشترى من المتجر</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="hero__right">
+            <div class="glass">
+              <div class="glass__title">قواعد سريعة</div>
+              <ul class="rules">
+                <li>لا حضور بدون إنهاء <b>التلميح</b> بالكامل.</li>
+                <li>إذا أغلقت قبل التلميح: تُلغى مكافآت الألعاب الأربع.</li>
+                <li>أول إضافة يومية: لا خروج قبل حفظ <b>4</b> بطاقات.</li>
+                <li>أول مرة بالحساب: معك <b>900</b> ذهب.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ADD -->
+      <section class="view" id="view-add">
+        <div class="panel">
+          <div class="panel__head">
+            <h2>إضافة بطاقات اليوم</h2>
+            <div class="muted" id="addHint">—</div>
+          </div>
+
+          <div class="formGrid">
+            <div class="field">
+              <label>
+                النص الأصلي
+                <button class="qBtn" type="button" data-help="foreignHelp">?</button>
+              </label>
+              <input id="inFront" maxlength="45" placeholder="مثال: apple" />
+              <div class="field__sub">حتى 45 حرف</div>
+            </div>
+
+            <div class="field">
+              <label>
+                الترجمة / المعنى
+                <button class="qBtn" type="button" data-help="nativeHelp">?</button>
+              </label>
+              <input id="inBack" maxlength="45" placeholder="مثال: تفاحة" />
+              <div class="field__sub">حتى 45 حرف</div>
+            </div>
+
+            <div class="field">
+              <label>
+                تلميح
+                <button class="qBtn" type="button" data-help="hintHelp">?</button>
+              </label>
+              <input id="inHint" maxlength="60" placeholder="مثال: 🍎 أو (فاكهة)" />
+              <div class="field__sub">حتى 60 حرف</div>
+            </div>
+          </div>
+
+          <div class="rowActions">
+            <button class="btn btn--primary" id="btnSaveCard">
+              <span class="material-icons">save</span> حفظ البطاقة
+            </button>
+            <button class="btn btn--danger" id="btnExitAdd">
+              <span class="material-icons">close</span> خروج
+            </button>
+          </div>
+
+          <div class="divider"></div>
+          <div class="statsLine" id="addStats">—</div>
+
+          <div class="divider"></div>
+          <div class="muted">بطاقات اليوم المضافة:</div>
+          <div class="cardsList" id="todayList"></div>
+        </div>
+      </section>
+
+      <!-- STORE -->
+      <section class="view" id="view-store">
+        <div class="panel">
+          <div class="panel__head">
+            <h2>المتجر</h2>
+            <div class="muted">الشراء بالذهب فقط</div>
+          </div>
+
+          <div class="storeGrid">
+            <div class="storeItem">
+              <div class="storeItem__icon material-icons">note_add</div>
+              <div class="storeItem__info">
+                <div class="storeItem__title">بطاقة إضافية لليوم</div>
+                <div class="storeItem__sub">ترفع الحد اليومي +1 (حتى بطاقتين شراء باليوم).</div>
+              </div>
+              <div class="storeItem__buy">
+                <div class="price">100</div>
+                <button class="btn btn--small btn--primary" data-buy="extraCard">شراء</button>
+              </div>
+            </div>
+
+            <div class="storeItem">
+              <div class="storeItem__icon material-icons">skip_next</div>
+              <div class="storeItem__info">
+                <div class="storeItem__title">تخطي لعبة</div>
+                <div class="storeItem__sub">ينهي لعبة واحدة ويمنح مكاسب مثالية (عدا التلميح).</div>
+              </div>
+              <div class="storeItem__buy">
+                <div class="price">900</div>
+                <button class="btn btn--small btn--primary" data-buy="skip">شراء</button>
+              </div>
+            </div>
+
+            <div class="storeItem">
+              <div class="storeItem__icon material-icons">bolt</div>
+              <div class="storeItem__info">
+                <div class="storeItem__title">مساعدة</div>
+                <div class="storeItem__sub">داخل الألعاب الأربع فقط (مع خصم 15% من ذهب اللعبة عند الاستخدام).</div>
+              </div>
+              <div class="storeItem__buy">
+                <div class="price">150</div>
+                <button class="btn btn--small btn--primary" data-buy="help">شراء</button>
+              </div>
+            </div>
+
+            <div class="storeItem">
+              <div class="storeItem__icon material-icons">local_gas_station</div>
+              <div class="storeItem__info">
+                <div class="storeItem__title">وقود</div>
+                <div class="storeItem__sub">يحمي الستريك من الانطفاء عند غياب يوم واحد (يُستهلك تلقائيًا).</div>
+              </div>
+              <div class="storeItem__buy">
+                <div class="price">250</div>
+                <button class="btn btn--small btn--primary" data-buy="fuel">شراء</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+          <div class="muted">
+            المخزون: <b id="invLine">—</b>
+            <br/>ملاحظة: البطاقات الإضافية غير المستخدمة تُحذف غدًا ويعود لك 50% من ثمنها.
+          </div>
+        </div>
+      </section>
+
+      <!-- CARDS -->
+      <section class="view" id="view-cards">
+        <div class="panel">
+          <div class="panel__head">
+            <h2>كل البطاقات</h2>
+            <div class="muted" id="cardsSub">اضغط البطاقة لعرض التفاصيل.</div>
+          </div>
+
+          <div class="searchRow">
+            <input id="cardsSearch" placeholder="بحث..." />
+            <button class="btn btn--small" id="btnExport">
+              <span class="material-icons">download</span> تصدير JSON
+            </button>
+            <label class="btn btn--small btn--ghost fileBtn">
+              <span class="material-icons">upload</span> استيراد JSON
+              <input type="file" id="importFile" accept="application/json" hidden />
+            </label>
+          </div>
+
+          <div class="cardsList" id="cardsList"></div>
+        </div>
+      </section>
+
+      <!-- GAME -->
+      <section class="view" id="view-game">
+        <div class="panel gamePanel">
+          <div class="gameTop">
+            <div class="gameTop__left">
+              <div class="gameTitle" id="gameTitle">—</div>
+              <div class="muted" id="gameSub">—</div>
+            </div>
+            <div class="gameTop__right">
+              <button class="btn btn--small btn--ghost" id="btnUseSkip">
+                <span class="material-icons">skip_next</span> تخطي
+              </button>
+              <button class="btn btn--small btn--ghost" id="btnUseHelp">
+                <span class="material-icons">bolt</span> مساعدة
+              </button>
+              <button class="btn btn--small btn--ghost" id="btnHelpLog">
+                <span class="material-icons">history</span> سجل المساعدات
+              </button>
+              <button class="btn btn--small btn--danger" id="btnAbortLesson">
+                <span class="material-icons">close</span> إلغاء
+              </button>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+
+          <div class="miniGrid" style="margin-top:0">
+            <div class="miniCard">
+              <div class="miniCard__title">الوقت</div>
+              <div class="bigNum" id="hudTime">0.0s</div>
+              <div class="miniCard__sub muted">مؤقت اللعبة الحالية</div>
+            </div>
+            <div class="miniCard">
+              <div class="miniCard__title">ذهب</div>
+              <div class="bigNum" id="hudGold">+0</div>
+              <div class="miniCard__sub muted">مكافآت معلّقة</div>
+            </div>
+            <div class="miniCard">
+              <div class="miniCard__title">XP</div>
+              <div class="bigNum" id="hudXP">+0</div>
+              <div class="miniCard__sub muted">مكافآت معلّقة</div>
+            </div>
+            <div class="miniCard">
+              <div class="miniCard__title">تقييم</div>
+              <div class="bigNum" id="hudRate">+0</div>
+              <div class="miniCard__sub muted">قد يزيد أو ينقص</div>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+
+          <div id="gameArea" class="gameArea"></div>
+
+          <div class="divider"></div>
+
+          <div class="rowActions">
+            <button class="btn btn--primary" id="btnNextGame">
+              <span class="material-icons">arrow_forward</span> اللعبة التالية
+            </button>
+            <button class="btn btn--primary" id="btnGoHint">
+              <span class="material-icons">task_alt</span> تقييم البطاقات
+            </button>
+          </div>
+
+          <div class="muted tiny" id="pendingNote">
+            مكافآت اليوم “معلّقة” ولن تُعتمد إلا بعد إنهاء التلميح بالكامل.
+          </div>
+        </div>
+      </section>
+    </main>
   </div>
 
-  <script type="module" src="auth.js"></script>
+  <!-- Modals -->
+  <div class="modalHost" id="modalHost"></div>
+
+  <script type="module" src="app.js"></script>
 </body>
 </html>
