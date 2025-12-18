@@ -1,410 +1,360 @@
+<!-- index.html -->
 <!doctype html>
 <html lang="ar" dir="rtl">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Memorize Game</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#070A12" />
+  <title>MemoQuest</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:wght@300;400;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;600;800&display=swap" rel="stylesheet">
 
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div class="bg">
-    <div class="stars"></div>
-    <div class="grid"></div>
-    <div class="glow"></div>
-  </div>
-
-  <header class="topbar">
-    <div class="brand">
-      <div class="logo">
-        <span class="material-symbols-rounded">rocket_launch</span>
-      </div>
-      <div>
-        <div class="brandTitle">Memorize</div>
-        <div class="brandSub">Cartoon Futuristic Learning Game</div>
-      </div>
-    </div>
-
-    <div class="stats">
-      <div class="pill">
-        <span class="material-symbols-rounded">paid</span>
-        <span id="goldVal">0</span>
-      </div>
-
-      <div class="pill">
-        <span class="material-symbols-rounded">bolt</span>
-        <span id="xpVal">0</span>
-      </div>
-
-      <div class="pill">
-        <span class="material-symbols-rounded">trending_up</span>
-        <span id="accLevelVal">Lv 1</span>
-      </div>
-
-      <div class="pill">
-        <span class="material-symbols-rounded">military_tech</span>
-        <span id="rankVal">خشبي 1</span>
-      </div>
-    </div>
-  </header>
-
-  <main class="wrap">
-    <!-- HOME -->
-    <section id="view-home" class="view active">
-      <div class="panel hero">
-        <div class="heroText">
-          <h1>ابدأ اللعب</h1>
-          <p>الدرس اليومي يعتمد على البطاقات المستحقة. الحضور لا يُسجَّل إلا بعد إنهاء تقييم البطاقات.</p>
-
-          <div class="miniStats">
-            <div class="miniPill">
-              <span class="material-symbols-rounded">trending_up</span>
-              <span id="homeLevelLine">المستوى: 1</span>
-            </div>
-            <div class="miniPill">
-              <span class="material-symbols-rounded">bolt</span>
-              <span id="homeXpLine">XP: 0</span>
-            </div>
-          </div>
-
-          <div class="btnRow">
-            <button id="btnStart" class="btn primary">
-              <span class="material-symbols-rounded">play_arrow</span>
-              بدأ اللعب
-            </button>
-            <button id="btnAdd" class="btn">
-              <span class="material-symbols-rounded">add_circle</span>
-              إضافة بطاقة جديدة
-            </button>
-            <button id="btnStore" class="btn">
-              <span class="material-symbols-rounded">storefront</span>
-              المتجر
-            </button>
-            <button id="btnCards" class="btn">
-              <span class="material-symbols-rounded">style</span>
-              البطاقات
-            </button>
-          </div>
-        </div>
-
-        <div class="heroCard">
-          <div class="heroCardInner">
-            <div class="heroBadge">
-              <span class="material-symbols-rounded">local_fire_department</span>
-              <span>الحماسة</span>
-            </div>
-            <div class="streak" id="streakVal">0</div>
-            <div class="heroHint">
-              <span class="material-symbols-rounded">info</span>
-              الحماسة تنطفئ عند الغياب، ويمكن حماية يوم غياب واحد باستخدام “الوقود”.
-            </div>
+  <div id="app">
+    <!-- Top HUD -->
+    <header class="hud">
+      <div class="hud__left">
+        <div class="brand">
+          <div class="brand__logo">MQ</div>
+          <div class="brand__text">
+            <div class="brand__name">MemoQuest</div>
+            <div class="brand__sub" id="todayLabel">—</div>
           </div>
         </div>
       </div>
 
-      <div class="panel twoCol">
-        <div class="subPanel">
-          <div class="subTitle">ماذا يوجد اليوم؟</div>
-          <div id="todaySummary" class="summaryBox"></div>
+      <div class="hud__right">
+        <div class="pill">
+          <span class="material-icons">paid</span>
+          <span id="goldLabel">0</span>
         </div>
-        <div class="subPanel">
-          <div class="subTitle">آخر نشاط</div>
-          <div id="lastActivity" class="summaryBox"></div>
+        <div class="pill">
+          <span class="material-icons">military_tech</span>
+          <span id="rankLabel">—</span>
+        </div>
+        <div class="pill">
+          <span class="material-icons">stars</span>
+          <span id="xpLabel">LV 1</span>
+        </div>
+        <div class="pill">
+          <span class="material-icons">local_fire_department</span>
+          <span id="streakLabel">0</span>
         </div>
       </div>
-    </section>
+    </header>
 
-    <!-- ADD CARD -->
-    <section id="view-add" class="view">
-      <div class="panel">
-        <div class="panelHead">
-          <div>
+    <!-- Navigation -->
+    <nav class="nav">
+      <button class="nav__btn active" data-view="home">
+        <span class="material-icons">home</span><span>الرئيسية</span>
+      </button>
+      <button class="nav__btn" data-view="add">
+        <span class="material-icons">add_circle</span><span>إضافة</span>
+      </button>
+      <button class="nav__btn" data-view="store">
+        <span class="material-icons">storefront</span><span>المتجر</span>
+      </button>
+      <button class="nav__btn" data-view="cards">
+        <span class="material-icons">style</span><span>البطاقات</span>
+      </button>
+    </nav>
+
+    <!-- Views -->
+    <main class="views">
+      <!-- HOME -->
+      <section class="view active" id="view-home">
+        <div class="panel hero">
+          <div class="hero__left">
+            <h1>تعلّم مثل لعبة</h1>
+            <p class="muted">
+              العب 4 ألعاب عشوائية ثم قيّم بالـ (تلميح) لتُسجّل حضور.
+              <br/>المكافآت تُعتمد فقط بعد إنهاء التلميح.
+            </p>
+
+            <div class="hero__actions">
+              <button class="btn btn--primary" id="btnStartPlay">
+                <span class="material-icons">play_circle</span>
+                بدأ اللعب
+              </button>
+
+              <button class="btn" id="btnQuickAdd">
+                <span class="material-icons">add</span>
+                إضافة بطاقة جديدة
+              </button>
+            </div>
+
+            <div class="miniGrid">
+              <div class="miniCard">
+                <div class="miniCard__title">تقدّم XP</div>
+                <div class="progress">
+                  <div class="progress__bar" id="xpBar"></div>
+                </div>
+                <div class="miniCard__sub" id="xpSub">—</div>
+              </div>
+
+              <div class="miniCard">
+                <div class="miniCard__title">تقدّم التصنيف</div>
+                <div class="progress">
+                  <div class="progress__bar" id="rankBar"></div>
+                </div>
+                <div class="miniCard__sub" id="rankSub">—</div>
+              </div>
+
+              <div class="miniCard">
+                <div class="miniCard__title">دروس اليوم</div>
+                <div class="bigNum" id="dueCountLabel">0</div>
+                <div class="miniCard__sub" id="dueSub">—</div>
+              </div>
+
+              <div class="miniCard">
+                <div class="miniCard__title">عناصر</div>
+                <div class="itemsRow">
+                  <span class="chip" id="chipSkip">تخطي: 0</span>
+                  <span class="chip" id="chipHelp">مساعدة: 0</span>
+                  <span class="chip" id="chipFuel">وقود: 0</span>
+                </div>
+                <div class="miniCard__sub">تُشترى من المتجر</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="hero__right">
+            <div class="glass">
+              <div class="glass__title">قواعد سريعة</div>
+              <ul class="rules">
+                <li>لا حضور بدون إنهاء <b>التلميح</b> بالكامل.</li>
+                <li>إذا سكّرت قبل التلميح: تُلغى مكافآت الألعاب الأربع.</li>
+                <li>إضافة اليوم: <b>4</b> بطاقات إلزامي لأول مرة، أقصى <b>10</b> + بطاقتين مشتريات.</li>
+                <li>أول مرة تفتح التطبيق: معك <b>900</b> ذهب.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ADD -->
+      <section class="view" id="view-add">
+        <div class="panel">
+          <div class="panel__head">
             <h2>إضافة بطاقات اليوم</h2>
-            <div class="muted">أول إضافة اليوم: لا خروج قبل حفظ 4 بطاقات، أو “حذف وخروج”. الحد الأقصى: 10 (حتى 12 بشراء بطاقتين).</div>
+            <div class="muted" id="addHint">—</div>
           </div>
-          <div class="panelActions">
-            <button id="btnBackFromAdd" class="btn ghost">
-              <span class="material-symbols-rounded">arrow_back</span>
-              رجوع
+
+          <div class="formGrid">
+            <div class="field">
+              <label>
+                &amp; النص الأصلي
+                <button class="qBtn" type="button" data-help="foreignHelp">?</button>
+              </label>
+              <input id="inFront" maxlength="45" placeholder="مثال: apple" />
+              <div class="field__sub">حتى 45 حرف</div>
+            </div>
+
+            <div class="field">
+              <label>
+                $ الترجمة / المعنى
+                <button class="qBtn" type="button" data-help="nativeHelp">?</button>
+              </label>
+              <input id="inBack" maxlength="45" placeholder="مثال: تفاحة" />
+              <div class="field__sub">حتى 45 حرف</div>
+            </div>
+
+            <div class="field">
+              <label>
+                # تلميح
+                <button class="qBtn" type="button" data-help="hintHelp">?</button>
+              </label>
+              <input id="inHint" maxlength="60" placeholder="مثال: 🍎 أو (فاكهة)" />
+              <div class="field__sub">حتى 60 حرف</div>
+            </div>
+          </div>
+
+          <div class="rowActions">
+            <button class="btn btn--primary" id="btnSaveCard">
+              <span class="material-icons">save</span> حفظ البطاقة
+            </button>
+            <button class="btn btn--danger" id="btnExitAdd">
+              <span class="material-icons">close</span> خروج
             </button>
           </div>
+
+          <div class="divider"></div>
+          <div class="statsLine" id="addStats">—</div>
+
+          <div class="divider"></div>
+          <div class="muted">بطاقات اليوم المضافة:</div>
+          <div class="cardsList" id="todayList"></div>
         </div>
+      </section>
 
-        <div class="formGrid">
-          <div class="field">
-            <label>
-              الكلمة/الجملة الأجنبية
-              <button class="qBtn" data-help="foreignHelp" type="button">?</button>
-            </label>
-            <input id="inForeign" maxlength="45" placeholder="مثال: apple" />
-            <div class="tiny">حد أقصى 45 حرف.</div>
-          </div>
-
-          <div class="field">
-            <label>
-              الترجمة/التوضيح بلغتك
-              <button class="qBtn" data-help="nativeHelp" type="button">?</button>
-            </label>
-            <input id="inNative" maxlength="45" placeholder="مثال: تفاحة" />
-            <div class="tiny">حد أقصى 45 حرف.</div>
-          </div>
-
-          <div class="field">
-            <label>
-              تلميح (رمز/إيموجي/وصف قصير)
-              <button class="qBtn" data-help="hintHelp" type="button">?</button>
-            </label>
-            <input id="inHint" maxlength="60" placeholder="مثال: 🍏 أو (فاكهة)" />
-            <div class="tiny">حد أقصى 60 حرف. يقبل الرموز والإيموجي.</div>
-          </div>
-        </div>
-
-        <div class="btnRow">
-          <button id="btnSaveCard" class="btn primary">
-            <span class="material-symbols-rounded">save</span>
-            حفظ البطاقة
-          </button>
-
-          <div class="spacer"></div>
-
-          <div class="counterBox">
-            <div class="counterLabel">بطاقات اليوم</div>
-            <div class="counterVal" id="todayCount">0</div>
-          </div>
-
-          <div class="counterBox">
-            <div class="counterLabel">السعة</div>
-            <div class="counterVal" id="todayCap">10</div>
-          </div>
-        </div>
-
-        <div class="divider"></div>
-
-        <div class="subTitle">بطاقات اليوم المضافة</div>
-        <div id="todayList" class="cardList"></div>
-      </div>
-    </section>
-
-    <!-- STORE -->
-    <section id="view-store" class="view">
-      <div class="panel">
-        <div class="panelHead">
-          <div>
+      <!-- STORE -->
+      <section class="view" id="view-store">
+        <div class="panel">
+          <div class="panel__head">
             <h2>المتجر</h2>
-            <div class="muted">الشراء بالذهب فقط. البطاقات الإضافية غير المستخدمة تُحذف غدًا ويُعاد 50% من ثمنها.</div>
+            <div class="muted">الشراء بالذهب فقط</div>
           </div>
-          <div class="panelActions">
-            <button id="btnBackFromStore" class="btn ghost">
-              <span class="material-symbols-rounded">arrow_back</span>
-              رجوع
-            </button>
+
+          <div class="storeGrid">
+            <div class="storeItem">
+              <div class="storeItem__icon material-icons">note_add</div>
+              <div class="storeItem__info">
+                <div class="storeItem__title">بطاقة إضافية لليوم</div>
+                <div class="storeItem__sub">ترفع الحد اليومي +1 (حتى بطاقتين شراء باليوم).</div>
+              </div>
+              <div class="storeItem__buy">
+                <div class="price">100</div>
+                <button class="btn btn--small btn--primary" data-buy="extraCard">شراء</button>
+              </div>
+            </div>
+
+            <div class="storeItem">
+              <div class="storeItem__icon material-icons">skip_next</div>
+              <div class="storeItem__info">
+                <div class="storeItem__title">تخطي لعبة</div>
+                <div class="storeItem__sub">ينهي لعبة واحدة ويمنح مكاسب مثالية (عدا التلميح).</div>
+              </div>
+              <div class="storeItem__buy">
+                <div class="price">900</div>
+                <button class="btn btn--small btn--primary" data-buy="skip">شراء</button>
+              </div>
+            </div>
+
+            <div class="storeItem">
+              <div class="storeItem__icon material-icons">bolt</div>
+              <div class="storeItem__info">
+                <div class="storeItem__title">مساعدة</div>
+                <div class="storeItem__sub">داخل الألعاب الأربع فقط (مع خصم 15% من ذهب اللعبة عند الاستخدام).</div>
+              </div>
+              <div class="storeItem__buy">
+                <div class="price">150</div>
+                <button class="btn btn--small btn--primary" data-buy="help">شراء</button>
+              </div>
+            </div>
+
+            <div class="storeItem">
+              <div class="storeItem__icon material-icons">local_gas_station</div>
+              <div class="storeItem__info">
+                <div class="storeItem__title">وقود</div>
+                <div class="storeItem__sub">يحمي الستريك من الانطفاء عند غياب يوم واحد (يُستهلك تلقائيًا).</div>
+              </div>
+              <div class="storeItem__buy">
+                <div class="price">250</div>
+                <button class="btn btn--small btn--primary" data-buy="fuel">شراء</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+          <div class="muted">
+            المخزون: <b id="invLine">—</b>
+            <br/>ملاحظة: البطاقات الإضافية غير المستخدمة تُحذف غدًا ويعود لك 50% من ثمنها.
           </div>
         </div>
+      </section>
 
-        <div class="storeGrid">
-          <div class="storeItem">
-            <div class="storeTop">
-              <span class="material-symbols-rounded ico">library_add</span>
-              <div>
-                <div class="storeName">بطاقة إضافية لليوم</div>
-                <div class="storeDesc">ترفع الحد اليومي +1 (حتى بطاقتين شراء باليوم).</div>
-              </div>
-            </div>
-            <div class="storeBottom">
-              <div class="price">
-                <span class="material-symbols-rounded">paid</span> 100
-              </div>
-              <button class="btn primary" id="buyExtraCard">شراء</button>
-            </div>
-            <div class="tiny">الحد الأقصى: 2 يوميًا. غير المستخدم يُحذف غدًا ويُعاد 50%.</div>
-          </div>
-
-          <div class="storeItem">
-            <div class="storeTop">
-              <span class="material-symbols-rounded ico">skip_next</span>
-              <div>
-                <div class="storeName">تخطي لعبة</div>
-                <div class="storeDesc">ينهي لعبة واحدة ويمنح مكاسب مثالية (عدا التلميح).</div>
-              </div>
-            </div>
-            <div class="storeBottom">
-              <div class="price">
-                <span class="material-symbols-rounded">paid</span> 900
-              </div>
-              <button class="btn primary" id="buySkip">شراء</button>
-            </div>
-            <div class="tiny">سعر مرتفع جدًا كما طلبت.</div>
-          </div>
-
-          <div class="storeItem">
-            <div class="storeTop">
-              <span class="material-symbols-rounded ico">support_agent</span>
-              <div>
-                <div class="storeName">مساعدة داخل الألعاب</div>
-                <div class="storeDesc">تلميح ذكي داخل الألعاب الأربع فقط.</div>
-              </div>
-            </div>
-            <div class="storeBottom">
-              <div class="price">
-                <span class="material-symbols-rounded">paid</span> 150
-              </div>
-              <button class="btn primary" id="buyHelp">شراء</button>
-            </div>
-            <div class="tiny">عند استخدامها داخل لعبة: خصم 15% من ذهب تلك اللعبة (توازن).</div>
-          </div>
-
-          <div class="storeItem">
-            <div class="storeTop">
-              <span class="material-symbols-rounded ico">local_gas_station</span>
-              <div>
-                <div class="storeName">وقود (حماية الحماسة)</div>
-                <div class="storeDesc">يحمي الستريك من الانطفاء عند غياب يوم واحد (يُستهلك تلقائيًا).</div>
-              </div>
-            </div>
-            <div class="storeBottom">
-              <div class="price">
-                <span class="material-symbols-rounded">paid</span> 250
-              </div>
-              <button class="btn primary" id="buyFuel">شراء</button>
-            </div>
-            <div class="tiny">إذا غبت يومًا: يُستهلك 1 وقود بدل تصفير الحماسة.</div>
-          </div>
-        </div>
-
-        <div class="divider"></div>
-
-        <div class="subTitle">المخزون</div>
-        <div class="inventory">
-          <div class="invItem">
-            <span class="material-symbols-rounded">library_add</span>
-            بطاقات إضافية متاحة اليوم:
-            <b id="invExtra">0</b>
-          </div>
-          <div class="invItem">
-            <span class="material-symbols-rounded">skip_next</span>
-            تخطي متاح:
-            <b id="invSkip">0</b>
-          </div>
-          <div class="invItem">
-            <span class="material-symbols-rounded">support_agent</span>
-            مساعدات متاحة:
-            <b id="invHelp">0</b>
-          </div>
-          <div class="invItem">
-            <span class="material-symbols-rounded">local_gas_station</span>
-            وقود متاح:
-            <b id="invFuel">0</b>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- CARDS -->
-    <section id="view-cards" class="view">
-      <div class="panel">
-        <div class="panelHead">
-          <div>
+      <!-- CARDS -->
+      <section class="view" id="view-cards">
+        <div class="panel">
+          <div class="panel__head">
             <h2>كل البطاقات</h2>
-            <div class="muted">اضغط على البطاقة لعرض التلميح.</div>
+            <div class="muted" id="cardsSub">اضغط البطاقة لعرض التفاصيل.</div>
           </div>
-          <div class="panelActions">
-            <button id="btnBackFromCards" class="btn ghost">
-              <span class="material-symbols-rounded">arrow_back</span>
-              رجوع
+
+          <div class="searchRow">
+            <input id="cardsSearch" placeholder="بحث..." />
+            <button class="btn btn--small" id="btnExport">
+              <span class="material-icons">download</span> تصدير JSON
+            </button>
+            <label class="btn btn--small btn--ghost fileBtn">
+              <span class="material-icons">upload</span> استيراد JSON
+              <input type="file" id="importFile" accept="application/json" hidden />
+            </label>
+          </div>
+
+          <div class="cardsList" id="cardsList"></div>
+        </div>
+      </section>
+
+      <!-- GAME -->
+      <section class="view" id="view-game">
+        <div class="panel gamePanel">
+          <div class="gameTop">
+            <div class="gameTop__left">
+              <div class="gameTitle" id="gameTitle">—</div>
+              <div class="muted" id="gameSub">—</div>
+            </div>
+            <div class="gameTop__right">
+              <button class="btn btn--small btn--ghost" id="btnUseSkip">
+                <span class="material-icons">skip_next</span> تخطي
+              </button>
+              <button class="btn btn--small btn--ghost" id="btnUseHelp">
+                <span class="material-icons">bolt</span> مساعدة
+              </button>
+              <button class="btn btn--small btn--ghost" id="btnHelpLog">
+                <span class="material-icons">history</span> سجل المساعدات
+              </button>
+              <button class="btn btn--small btn--danger" id="btnAbortLesson">
+                <span class="material-icons">close</span> إلغاء
+              </button>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+
+          <div class="miniGrid" style="margin-top:0">
+            <div class="miniCard">
+              <div class="miniCard__title">الوقت</div>
+              <div class="bigNum" id="hudTime">0.0s</div>
+              <div class="miniCard__sub muted">مؤقت اللعبة الحالية</div>
+            </div>
+            <div class="miniCard">
+              <div class="miniCard__title">ذهب</div>
+              <div class="bigNum" id="hudGold">+0</div>
+              <div class="miniCard__sub muted">مكافآت معلّقة</div>
+            </div>
+            <div class="miniCard">
+              <div class="miniCard__title">XP</div>
+              <div class="bigNum" id="hudXP">+0</div>
+              <div class="miniCard__sub muted">مكافآت معلّقة</div>
+            </div>
+            <div class="miniCard">
+              <div class="miniCard__title">تقييم</div>
+              <div class="bigNum" id="hudRate">+0</div>
+              <div class="miniCard__sub muted">قد يزيد أو ينقص</div>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+
+          <div id="gameArea" class="gameArea"></div>
+
+          <div class="divider"></div>
+
+          <div class="rowActions">
+            <button class="btn btn--primary" id="btnNextGame">
+              <span class="material-icons">arrow_forward</span> اللعبة التالية
+            </button>
+            <button class="btn btn--primary" id="btnGoHint">
+              <span class="material-icons">task_alt</span> تقييم البطاقات
             </button>
           </div>
-        </div>
 
-        <div class="searchRow">
-          <input id="cardSearch" placeholder="بحث..." />
-          <button id="btnExport" class="btn">
-            <span class="material-symbols-rounded">download</span>
-            تصدير
-          </button>
-          <button id="btnImport" class="btn">
-            <span class="material-symbols-rounded">upload</span>
-            استيراد
-          </button>
-          <input id="importFile" type="file" accept="application/json" hidden />
-        </div>
-
-        <div id="allCardsList" class="cardList"></div>
-      </div>
-    </section>
-
-    <!-- PLAY -->
-    <section id="view-play" class="view">
-      <div class="panel">
-        <div class="panelHead">
-          <div>
-            <h2 id="playTitle">الدرس اليومي</h2>
-            <div class="muted" id="playSub">الألعاب تُختار عشوائيًا. التلميح آخرًا لتسجيل الحضور.</div>
-          </div>
-          <div class="panelActions">
-            <button id="btnExitPlay" class="btn ghost">
-              <span class="material-symbols-rounded">close</span>
-              خروج
-            </button>
+          <div class="muted tiny" id="pendingNote">
+            مكافآت اليوم “معلّقة” ولن تُعتمد إلا بعد إنهاء التلميح بالكامل.
           </div>
         </div>
-
-        <div class="playHUD">
-          <div class="hudPill"><span class="material-symbols-rounded">timer</span><span id="hudTime">0.0s</span></div>
-          <div class="hudPill"><span class="material-symbols-rounded">paid</span><span id="hudGold">+0</span></div>
-          <div class="hudPill"><span class="material-symbols-rounded">bolt</span><span id="hudXP">+0</span></div>
-          <div class="hudPill"><span class="material-symbols-rounded">military_tech</span><span id="hudRate">0</span></div>
-
-          <div class="spacer"></div>
-
-          <button id="btnSkip" class="btn warn">
-            <span class="material-symbols-rounded">skip_next</span>
-            تخطي
-          </button>
-          <button id="btnHelp" class="btn">
-            <span class="material-symbols-rounded">support_agent</span>
-            مساعدة
-          </button>
-
-          <!-- ✅ جديد -->
-          <button id="btnHelpLog" class="btn">
-            <span class="material-symbols-rounded">history</span>
-            سجل المساعدات
-          </button>
-        </div>
-
-        <div id="gameArea" class="gameArea"></div>
-
-        <div class="btnRow">
-          <button id="btnNextGame" class="btn primary">
-            <span class="material-symbols-rounded">sports_esports</span>
-            اللعبة التالية
-          </button>
-          <button id="btnGoHint" class="btn primary alt">
-            <span class="material-symbols-rounded">rate_review</span>
-            تقييم البطاقات
-          </button>
-        </div>
-      </div>
-    </section>
-  </main>
-
-  <!-- MODAL -->
-  <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
-    <div class="modalBox">
-      <div class="modalHead">
-        <div class="modalTitle" id="modalTitle">عنوان</div>
-        <button id="modalClose" class="iconBtn" aria-label="Close">
-          <span class="material-symbols-rounded">close</span>
-        </button>
-      </div>
-      <div class="modalBody" id="modalBody"></div>
-      <div class="modalFoot" id="modalFoot"></div>
-    </div>
+      </section>
+    </main>
   </div>
+
+  <!-- Modals -->
+  <div class="modalHost" id="modalHost"></div>
 
   <script src="app.js"></script>
 </body>
