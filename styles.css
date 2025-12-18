@@ -620,4 +620,4 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
 .choiceBtn.on{
   background: linear-gradient(135deg, rgba(34,197,94,.22), rgba(6,182,212,.12));
   border-color: rgba(34,197,94,.45);
-              }
+}
