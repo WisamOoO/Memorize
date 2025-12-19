@@ -1,28 +1,122 @@
-/* app.js (Cloud Firestore + Fixed UI wiring + Game fixes)
-   - Requires login + verified email (enforced)
-   - Saves state in Firestore users/{uid} doc
-   - Local cache only as fallback
-*/
+/* app.js */
+/* =========================
+   Memorize Game (Style v1 + Logic v2)
+   Persistent storage: localStorage
+   ========================= */
 
-import {
-  auth, db,
-  onAuthStateChanged,
-  doc, getDoc, setDoc, deleteDoc, serverTimestamp
-} from "./firebase.js";
-
-import {
-  signOut,
-  deleteUser,
-  reauthenticateWithPopup,
-  EmailAuthProvider,
-  reauthenticateWithCredential
-} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
-
-import { googleProvider } from "./firebase.js";
-
-/* ---------- DOM helpers ---------- */
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
+/* ---------- Storage ---------- */
+const STORAGE_KEY = "memoquest_app_merged_v1";
+
+function nowISODateKey() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const da = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${da}`;
+}
+function formatGroupName(dateKey) {
+  const [y,m,d] = dateKey.split("-");
+  return `${d}.${m}.${y.slice(2)}`;
+}
+function parseDateKey(dateKey){
+  const [y,m,d] = dateKey.split("-").map(Number);
+  return new Date(y, m-1, d);
+}
+function daysBetween(aKey, bKey){
+  const a = parseDateKey(aKey);
+  const b = parseDateKey(bKey);
+  const ms = b - a;
+  return Math.floor(ms / (1000*60*60*24));
+}
+function loadState() {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+function saveState(state) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+function defaultState() {
+  const dateKey = nowISODateKey();
+  return {
+    meta: {
+      createdAt: Date.now(),
+      lastSeenDateKey: dateKey,
+      lastAttendanceDateKey: null,
+      streak: 0,
+      lastActivity: "لا يوجد.",
+      addLockDateKey: null,
+      _resolvedDueTodayKey: null
+    },
+    wallet: { gold: 900, xp: 0 },
+    rank: { tierIndex: 0, subLevel: 1, progress: 0 },
+    inventory: {
+      dateKey,
+      extraCardsBought: 0,
+      extraCardsUsed: 0,
+      skip: 0,
+      help: 0,
+      fuel: 0
+    },
+    groups: {},
+    cards: {},
+    ignoreList: {}
+  };
+}
+
+/* ---------- Constants ---------- */
+const TIERS = ["خشبي","حديدي","نحاسي","فضي","ذهبي","زمردي","بلاتيني","ألماسي","أستاذ","مفكر","حكيم","ملهم"];
+const TIER_MAX_SUB = (tierIdx) => {
+  if (tierIdx <= 6) return 3;
+  if (tierIdx === 7) return 4;
+  if (tierIdx === 8) return 5;
+  if (tierIdx === 9) return 6;
+  if (tierIdx === 10) return 7;
+  return 999999;
+};
+
+function targetProgressForRank(tierIdx, subLevel) {
+  if (tierIdx <= 6) return 120 + (30 * tierIdx) + (15 * (subLevel - 1));
+  if (tierIdx === 7) return 400 + (40 * (subLevel - 1));
+  if (tierIdx === 8) return 600 + (60 * (subLevel - 1));
+  if (tierIdx === 9) return 900 + (90 * (subLevel - 1));
+  if (tierIdx === 10) return 1400 + (120 * (subLevel - 1));
+  return 2200 + (100 * (subLevel - 1));
+}
+
+function difficultyD(rank) {
+  const R = rank.tierIndex;
+  const S = rank.subLevel;
+  return 1 + (0.12 * R) + (0.04 * (S - 1));
+}
+
+function levelMultiplier(level) {
+  const map = {0:0.80,1:1.00,2:1.10,3:1.25,4:1.40,5:1.60,6:1.85,7:2.20};
+  return map[level] ?? 1.00;
+}
+
+function speedFactor(sec) {
+  if (sec <= 2.0) return 1.30;
+  if (sec <= 4.0) return 1.15;
+  if (sec <= 7.0) return 1.00;
+  if (sec <= 12.0) return 0.80;
+  return 0.60;
+}
+
+const DUE_LEVELS = new Set([1,3,6,7]);
+const MAX_DAILY_BASE = 10;
+const MIN_DAILY_FIRST = 4;
+
+/* ---------- Account Level ---------- */
+function accountLevelFromXP(xp){
+  const lvl = Math.floor(Math.sqrt(Math.max(0, xp) / 500)) + 1;
+  const curMinXP = (Math.max(0, (lvl-1)) ** 2) * 500;
+  const nextMinXP = (lvl ** 2) * 500;
+  return { level: lvl, curMinXP, nextMinXP, toNext: Math.max(0, nextMinXP - xp) };
+}
 
 /* ---------- Audio ---------- */
 const AudioFX = (() => {
@@ -52,12 +146,7 @@ const AudioFX = (() => {
   return {beep};
 })();
 
-/* ---------- Modal ---------- */
-function escapeHTML(s) {
-  return String(s ?? "").replace(/[&<>"']/g, (m)=>({
-    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"
-  }[m]));
-}
+/* ---------- Modal (v1 host) ---------- */
 function openModal(title, bodyHTML, buttons = [], opts = {}) {
   const host = $("#modalHost");
   host.innerHTML = "";
@@ -112,199 +201,8 @@ function makeBtn(htmlText, cls="btn", onClick=()=>{}) {
   return b;
 }
 
-/* ---------- State (Cloud) ---------- */
-const CACHE_KEY = (uid) => `mg_cache_${uid}`;
-
-function nowISODateKey() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const da = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${da}`;
-}
-function formatGroupName(dateKey) {
-  const [y,m,d] = dateKey.split("-");
-  return `${d}.${m}.${y.slice(2)}`;
-}
-function parseDateKey(dateKey){
-  const [y,m,d] = dateKey.split("-").map(Number);
-  return new Date(y, m-1, d);
-}
-function daysBetween(aKey, bKey){
-  const a = parseDateKey(aKey);
-  const b = parseDateKey(bKey);
-  const ms = b - a;
-  return Math.floor(ms / (1000*60*60*24));
-}
-function uuid() {
-  return "c_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
-}
-
-function defaultState() {
-  const dateKey = nowISODateKey();
-  return {
-    meta: {
-      createdAt: Date.now(),
-      lastSeenDateKey: dateKey,
-      lastAttendanceDateKey: null,
-      streak: 0,
-      lastActivity: "لا يوجد.",
-      addLockDateKey: null,
-      _resolvedDueTodayKey: null
-    },
-    wallet: { gold: 900, xp: 0 },
-    rank: { tierIndex: 0, subLevel: 1, progress: 0 },
-    inventory: {
-      dateKey,
-      extraCardsBought: 0,
-      extraCardsUsed: 0,
-      skip: 0,
-      help: 0,
-      fuel: 0
-    },
-    groups: {},
-    cards: {},
-    ignoreList: {}
-  };
-}
-
-let USER = null;
-let USER_DOC_REF = null;
-let STATE = null;
-
-let SAVE_TIMER = null;
-let SAVE_INFLIGHT = false;
-
-async function loadFromCloudOrCache() {
-  const uid = USER.uid;
-  USER_DOC_REF = doc(db, "users", uid);
-
-  // 1) حاول Cloud
-  try{
-    const snap = await getDoc(USER_DOC_REF);
-    if (snap.exists()) {
-      const data = snap.data();
-      const st = data.state || null;
-
-      // إذا ما في state، أنشئ default أول مرة
-      if (!st) {
-        const fresh = defaultState();
-        STATE = fresh;
-        await setDoc(USER_DOC_REF, {
-          uid,
-          email: USER.email || null,
-          displayName: data.displayName || USER.displayName || "مستخدم",
-          createdAt: data.createdAt || serverTimestamp(),
-          updatedAt: serverTimestamp(),
-          state: fresh
-        }, { merge: true });
-      } else {
-        STATE = st;
-      }
-
-      // كاش محلي احتياطي
-      localStorage.setItem(CACHE_KEY(uid), JSON.stringify(STATE));
-      return;
-    }
-
-    // وثيقة غير موجودة: أنشئ
-    STATE = defaultState();
-    await setDoc(USER_DOC_REF, {
-      uid,
-      email: USER.email || null,
-      displayName: USER.displayName || "مستخدم",
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-      state: STATE
-    }, { merge:true });
-
-    localStorage.setItem(CACHE_KEY(uid), JSON.stringify(STATE));
-    return;
-  }catch(e){
-    // 2) fallback cache
-    const raw = localStorage.getItem(CACHE_KEY(uid));
-    if (raw) {
-      try { STATE = JSON.parse(raw); return; } catch {}
-    }
-    STATE = defaultState();
-  }
-}
-
-function scheduleSave(reason="") {
-  if (!USER_DOC_REF || !STATE) return;
-
-  // كاش محلي فورًا
-  try { localStorage.setItem(CACHE_KEY(USER.uid), JSON.stringify(STATE)); } catch {}
-
-  clearTimeout(SAVE_TIMER);
-  SAVE_TIMER = setTimeout(() => saveNow(reason), 450);
-}
-
-async function saveNow(reason="") {
-  if (SAVE_INFLIGHT || !USER_DOC_REF || !STATE) return;
-  SAVE_INFLIGHT = true;
-  try{
-    await setDoc(USER_DOC_REF, {
-      updatedAt: serverTimestamp(),
-      state: STATE
-    }, { merge:true });
-  }catch(e){
-    // اتركها، الكاش المحلي موجود
-  }finally{
-    SAVE_INFLIGHT = false;
-  }
-}
-
-/* ---------- Constants ---------- */
-const TIERS = ["خشبي","حديدي","نحاسي","فضي","ذهبي","زمردي","بلاتيني","ألماسي","أستاذ","مفكر","حكيم","ملهم"];
-const TIER_MAX_SUB = (tierIdx) => {
-  if (tierIdx <= 6) return 3;
-  if (tierIdx === 7) return 4;
-  if (tierIdx === 8) return 5;
-  if (tierIdx === 9) return 6;
-  if (tierIdx === 10) return 7;
-  return 999999;
-};
-
-function targetProgressForRank(tierIdx, subLevel) {
-  if (tierIdx <= 6) return 120 + (30 * tierIdx) + (15 * (subLevel - 1));
-  if (tierIdx === 7) return 400 + (40 * (subLevel - 1));
-  if (tierIdx === 8) return 600 + (60 * (subLevel - 1));
-  if (tierIdx === 9) return 900 + (90 * (subLevel - 1));
-  if (tierIdx === 10) return 1400 + (120 * (subLevel - 1));
-  return 2200 + (100 * (subLevel - 1));
-}
-
-function difficultyD(rank) {
-  const R = rank.tierIndex;
-  const S = rank.subLevel;
-  return 1 + (0.12 * R) + (0.04 * (S - 1));
-}
-
-function levelMultiplier(level) {
-  const map = {0:0.80,1:1.00,2:1.10,3:1.25,4:1.40,5:1.60,6:1.85,7:2.20};
-  return map[level] ?? 1.00;
-}
-
-function speedFactor(sec) {
-  if (sec <= 2.0) return 1.30;
-  if (sec <= 4.0) return 1.15;
-  if (sec <= 7.0) return 1.00;
-  if (sec <= 12.0) return 0.80;
-  return 0.60;
-}
-
-const DUE_LEVELS = new Set([1,3,6,7]);
-const MAX_DAILY_BASE = 10;
-const MIN_DAILY_FIRST = 4;
-
-/* ---------- Account Level ---------- */
-function accountLevelFromXP(xp){
-  const lvl = Math.floor(Math.sqrt(Math.max(0, xp) / 500)) + 1;
-  const curMinXP = (Math.max(0, (lvl-1)) ** 2) * 500;
-  const nextMinXP = (lvl ** 2) * 500;
-  return { level: lvl, curMinXP, nextMinXP, toNext: Math.max(0, nextMinXP - xp) };
-}
+/* ---------- State ---------- */
+let STATE = loadState() || defaultState();
 
 /* ---------- Date safety ---------- */
 function safeTodayKey(state) {
@@ -321,6 +219,14 @@ function safeTodayKey(state) {
 }
 
 /* ---------- Helpers ---------- */
+function escapeHTML(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (m)=>({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"
+  }[m]));
+}
+function uuid() {
+  return "c_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
+}
 function getTodayGroupKey() {
   return safeTodayKey(STATE);
 }
@@ -352,17 +258,31 @@ function dueGroupsToday() {
   return Array.from(due).map(k => STATE.groups[k]).filter(Boolean);
 }
 
-/* ---------- Card daily progression ---------- */
-function bumpCardLevelsForNewDay(prevDayKey, todayKey){
-  if (STATE.meta.lastAttendanceDateKey !== prevDayKey) return;
-
+/* =========================================================
+   ✅ FIX: Daily progression regardless of attendance,
+   with freeze-on-due-level when user was absent.
+   ========================================================= */
+function advanceCardLevelsForNewDay(prevDayKey, todayKey, wasAbsentPrevDay){
   Object.values(STATE.cards).forEach(c => {
     if (!c) return;
-    if (c.level < 6) c.level += 1;
 
     const addKey = c.addDateKey || prevDayKey;
     const age = daysBetween(addKey, todayKey);
-    if (age >= 30) c.level = 7;
+
+    // 30+ days => level 7
+    if (age >= 30) {
+      c.level = 7;
+      return;
+    }
+
+    // If user was absent on prev day, freeze cards that were due that day
+    // (levels 1,3,6,7) so they don't skip the due day.
+    if (wasAbsentPrevDay && DUE_LEVELS.has(c.level) && c.level < 7) {
+      return;
+    }
+
+    // Normal auto progression (0->1->2->3->4->5->6 then stay at 6 until 30)
+    if (c.level < 6) c.level += 1;
   });
 }
 
@@ -391,7 +311,10 @@ function ensureDayRollover() {
   const prev = STATE.inventory.dateKey;
 
   if (today !== prev) {
-    if (STATE.meta.lastAttendanceDateKey !== prev) {
+    const wasAbsentPrevDay = (STATE.meta.lastAttendanceDateKey !== prev);
+
+    // streak rule
+    if (wasAbsentPrevDay) {
       if ((STATE.inventory.fuel || 0) > 0) {
         STATE.inventory.fuel -= 1;
         STATE.meta.lastActivity = "تم استخدام 1 وقود لحماية الحماسة من الانطفاء.";
@@ -401,8 +324,10 @@ function ensureDayRollover() {
       }
     }
 
-    bumpCardLevelsForNewDay(prev, today);
+    // ✅ FIXED progression
+    advanceCardLevelsForNewDay(prev, today, wasAbsentPrevDay);
 
+    // enforce 7 at 30 days (safe)
     Object.values(STATE.cards).forEach(c => {
       const addKey = c?.addDateKey;
       if (!addKey) return;
@@ -410,6 +335,7 @@ function ensureDayRollover() {
       if (age >= 30) c.level = 7;
     });
 
+    // refund unused extra cards
     const unused = Math.max(0, STATE.inventory.extraCardsBought - STATE.inventory.extraCardsUsed);
     if (unused > 0) {
       const refund = Math.floor(unused * 100 * 0.5);
@@ -418,13 +344,17 @@ function ensureDayRollover() {
       AudioFX.beep("coin");
     }
 
+    // reset daily inventory counters
     STATE.inventory.dateKey = today;
     STATE.inventory.extraCardsBought = 0;
     STATE.inventory.extraCardsUsed = 0;
     STATE.meta.addLockDateKey = null;
+
+    // allow overdue modal again on new day
+    STATE.meta._resolvedDueTodayKey = null;
   }
 
-  scheduleSave("dayRollover");
+  saveState(STATE);
 }
 
 /* ---------- Rank update ---------- */
@@ -461,6 +391,7 @@ function applyRatingDelta(delta) {
 
 /* ---------- UI refresh ---------- */
 function refreshHUD() {
+  const todayKey = safeTodayKey(STATE);
   const g = getOrCreateTodayGroup();
 
   $("#todayLabel").textContent = `مجموعة اليوم: ${g.name}`;
@@ -579,7 +510,7 @@ function refreshCardsList(filter="") {
           if (ignored) delete STATE.ignoreList[c.id];
           else STATE.ignoreList[c.id] = true;
           STATE.meta.lastActivity = "تم تحديث قائمة التجاهل.";
-          scheduleSave("ignoreToggle");
+          saveState(STATE);
           closeModal();
           refreshHUD();
           refreshCardsList($("#cardsSearch").value);
@@ -627,7 +558,7 @@ function deleteTodayProgressAndExit() {
   clearAddInputs();
   STATE.meta.addLockDateKey = null;
   STATE.meta.lastActivity = "تم حذف إضافة اليوم غير المكتملة.";
-  scheduleSave("deleteTodayAdd");
+  saveState(STATE);
   closeModal();
   showView("home");
 }
@@ -644,7 +575,7 @@ function setLockOnAnyInput(){
   const c = $("#inHint").value.trim();
   if (a || b || c) {
     setAddLockIfNeeded();
-    scheduleSave("addLock");
+    saveState(STATE);
   }
 }
 function saveNewCard() {
@@ -700,7 +631,7 @@ function saveNewCard() {
   if (g.cardIds.length >= MIN_DAILY_FIRST) STATE.meta.addLockDateKey = null;
 
   STATE.meta.lastActivity = `تمت إضافة بطاقة جديدة إلى مجموعة ${g.name}.`;
-  scheduleSave("addCard");
+  saveState(STATE);
 
   clearAddInputs();
   AudioFX.beep("ok");
@@ -764,7 +695,7 @@ function checkOverdueModal() {
 
     STATE.meta._resolvedDueTodayKey = today;
     STATE.meta.lastActivity = "تم تحديد إجراء للمجموعات المستحقة.";
-    scheduleSave("overdueResolve");
+    saveState(STATE);
     closeModal();
     refreshHUD();
   });
@@ -941,7 +872,7 @@ function gameSubtitle(k) {
     matching: "اختر نصًا ثم ترجمته. الصحيح يختفي، والخطأ يسمح بإعادة بلا حدود.",
     flip: "تذكر أماكن النص والترجمة. عرض 5 ثوانٍ ثم قلب.",
     scrambled: "رتب أحرف النص الصحيح. 30% من بطاقات اليوم.",
-    typing: "اكتب النص الأصلي عند رؤية الترجمة. 30% مختلفة عن ترتيب الأحرف.",
+    typing: "اكتب النص الأصلي عند رؤية الترجمة. 30% مختلفة عن ترتيب الحروف.",
     hint: "التقييم إلزامي لتسجيل الحضور."
   }[k] || "");
 }
@@ -967,7 +898,7 @@ function renderGame(gameKey) {
         STATE.inventory.skip -= 1;
         applyPerfectGameRewards();
         PLAY.playedGames.push(gameKey);
-        scheduleSave("useSkip");
+        saveState(STATE);
         afterGameFinished(gameKey);
       })
     ]);
@@ -979,7 +910,7 @@ function renderGame(gameKey) {
 
     STATE.inventory.help -= 1;
     PLAY.usedHelpInGame = true;
-    scheduleSave("useHelp");
+    saveState(STATE);
 
     if (gameKey === "matching") matchingHelp();
     if (gameKey === "flip") flipHelp();
@@ -1097,9 +1028,6 @@ function matchingClick(t, el) {
     el.classList.add("gone");
     MATCH.correct++;
 
-    el.classList.add("okFlash");
-    first.el.classList.add("okFlash");
-
     awardOnCorrect(12, 6, dt, Math.max(first.level, t.level));
     const F = speedFactor(dt);
     const L = levelMultiplier(Math.max(first.level, t.level));
@@ -1110,10 +1038,6 @@ function matchingClick(t, el) {
     if (MATCH.correct >= PLAY.cards.length) finishMatching();
   } else {
     MATCH.errors++;
-    el.classList.add("badFlash");
-    first.el.classList.add("badFlash");
-    setTimeout(()=>{ el.classList.remove("badFlash"); first.el.classList.remove("badFlash"); }, 380);
-
     awardOnWrong(2, 8, Math.max(first.level, t.level), errorFactorFromErrors(MATCH.errors));
     AudioFX.beep("bad");
   }
@@ -1298,20 +1222,13 @@ function renderScrambledCard() {
     <div class="lettersRow" id="scrLetters"></div>
     <div class="rowActions" style="margin-top:12px">
       <button class="btn btn--primary" id="scrOk"><span class="material-icons">check</span> موافق</button>
-      <button class="btn" id="scrDel"><span class="material-icons">backspace</span> حذف</button>
-    </div>
-    <div class="tiny muted" style="margin-top:8px">
-      حذف: ضغطة قصيرة تحذف آخر حرف، ضغط مطوّل يحذف الكل.
+      <button class="btn" id="scrClear"><span class="material-icons">backspace</span> حذف</button>
     </div>
   `;
   area.appendChild(box);
 
   const ansEl = $("#scrAnswer");
   const lettersEl = $("#scrLetters");
-
-  function syncAnswer(){
-    ansEl.textContent = SCR.answer;
-  }
 
   shuffled.forEach((ch) => {
     const b = document.createElement("button");
@@ -1320,60 +1237,60 @@ function renderScrambledCard() {
     b.textContent = ch === " " ? "␠" : ch;
     b.onclick = () => {
       SCR.answer += ch;
-      syncAnswer();
+      ansEl.textContent = SCR.answer;
       b.disabled = true;
       AudioFX.beep("click");
     };
     lettersEl.appendChild(b);
   });
 
-  // حذف: قصير = آخر حرف، طويل = الكل
-  let holdTimer = null;
-  let didLong = false;
+  // ✅ FIX: short click removes last char, long press clears all
+  let clearHoldTimer = null;
+  const clearBtn = $("#scrClear");
 
-  function deleteLast(){
-    if (!SCR.answer.length) return;
-    const removed = SCR.answer.slice(-1);
-    SCR.answer = SCR.answer.slice(0, -1);
-    syncAnswer();
-
-    // إعادة تفعيل زر حرف واحد مطابق تم تعطيله
-    // (نبحث عن أول زر disabled يطابق الحرف المحذوف من النهاية)
-    const btns = Array.from(lettersEl.querySelectorAll("button"));
-    const target = btns.reverse().find(x => x.disabled && (x.textContent === (removed===" " ? "␠" : removed)));
-    if (target) target.disabled = false;
+  function enableLetterByIndex(idx){
+    const buttons = Array.from(lettersEl.querySelectorAll("button"));
+    if (idx >= 0 && idx < buttons.length) buttons[idx].disabled = false;
   }
 
-  function clearAll(){
-    SCR.answer = "";
-    syncAnswer();
-    lettersEl.querySelectorAll("button").forEach(b => b.disabled = false);
+  function rebuildDisabledFromAnswer(){
+    const buttons = Array.from(lettersEl.querySelectorAll("button"));
+    buttons.forEach(b => b.disabled = false);
+    // disable the first N picked letters as a simple approximation
+    // (keeps current behavior consistent enough)
+    const n = SCR.answer.length;
+    for (let i=0;i<n && i<buttons.length;i++) buttons[i].disabled = true;
   }
 
-  const delBtn = $("#scrDel");
-
-  const startHold = () => {
-    didLong = false;
-    holdTimer = setTimeout(()=>{
-      didLong = true;
-      clearAll();
+  clearBtn.onpointerdown = () => {
+    clearHoldTimer = setTimeout(() => {
+      SCR.answer = "";
+      ansEl.textContent = "";
+      lettersEl.querySelectorAll("button").forEach(b => b.disabled = false);
       AudioFX.beep("click");
+      clearHoldTimer = null;
     }, 600);
   };
-  const endHold = () => {
-    clearTimeout(holdTimer);
-    holdTimer = null;
-    if (!didLong) {
-      deleteLast();
-      AudioFX.beep("click");
+  clearBtn.onpointerup = () => {
+    if (clearHoldTimer) {
+      clearTimeout(clearHoldTimer);
+      clearHoldTimer = null;
+
+      // short click => remove last char
+      if (SCR.answer.length > 0) {
+        SCR.answer = SCR.answer.slice(0, -1);
+        ansEl.textContent = SCR.answer;
+        rebuildDisabledFromAnswer();
+        AudioFX.beep("click");
+      }
     }
   };
-
-  delBtn.addEventListener("mousedown", startHold);
-  delBtn.addEventListener("touchstart", startHold, {passive:true});
-  delBtn.addEventListener("mouseup", endHold);
-  delBtn.addEventListener("mouseleave", ()=>{ if(holdTimer){clearTimeout(holdTimer); holdTimer=null;} });
-  delBtn.addEventListener("touchend", endHold);
+  clearBtn.onpointerleave = () => {
+    if (clearHoldTimer) {
+      clearTimeout(clearHoldTimer);
+      clearHoldTimer = null;
+    }
+  };
 
   $("#scrOk").onclick = () => {
     const dt = (performance.now() - SCR.lastAt)/1000;
@@ -1424,11 +1341,6 @@ function finishScrambled() {
 /* ---------- Typing ---------- */
 let TYP = null;
 
-function normText(s){
-  // تجاهل فراغات البداية/النهاية + تجاهل حالة الأحرف + تطبيع Unicode
-  return String(s ?? "").normalize("NFKC").trim().toLowerCase();
-}
-
 function gameTyping() {
   const ids = PLAY.typingIds;
   const cards = ids.map(id => STATE.cards[id]).filter(Boolean);
@@ -1452,7 +1364,7 @@ function renderTypingCard() {
     <div class="typingBox">
       <div class="muted" style="font-weight:900">اكتب النص الأصلي</div>
       <input id="typeIn" placeholder="اكتب هنا..." />
-      <div class="muted tiny">لا فرق بين أحرف كبيرة/صغيرة، ويتم تجاهل الفراغات قبل/بعد.</div>
+      <div class="muted tiny">المقارنة حرف بحرف وتشمل الرموز.</div>
     </div>
     <div class="rowActions" style="margin-top:12px">
       <button class="btn btn--primary" id="typeOk"><span class="material-icons">check</span> موافق</button>
@@ -1467,10 +1379,8 @@ function renderTypingCard() {
     const dt = (performance.now() - TYP.lastAt)/1000;
     TYP.lastAt = performance.now();
 
-    const v = normText(input.value);
-    const target = normText(c.foreign);
-
-    if (v === target) {
+    const v = input.value;
+    if (v === c.foreign) {
       TYP.correct++;
       awardOnCorrect(16, 8, dt, c.level);
       const F = speedFactor(dt);
@@ -1538,12 +1448,10 @@ function showHelpLog(game){
 }
 
 function matchingHelp() {
+  const remaining = PLAY.cards.filter(c => !STATE.ignoreList[c.id]);
+  if (!remaining.length) return;
+  const pick = remaining[Math.floor(Math.random()*remaining.length)];
   const tiles = $$("#gameArea .tile").filter(t => !t.classList.contains("gone"));
-  const remainingIds = tiles.map(t => t.dataset.id);
-  const remainingCards = PLAY.cards.filter(c => remainingIds.includes("f_"+c.id) && remainingIds.includes("n_"+c.id));
-  if (!remainingCards.length) return;
-
-  const pick = remainingCards[Math.floor(Math.random()*remainingCards.length)];
   const a = tiles.find(x => x.textContent === pick.foreign);
   const b = tiles.find(x => x.textContent === pick.native);
 
@@ -1594,9 +1502,7 @@ function typingHelp() {
   if (!c) return;
   const input = $("#typeIn");
   if (!input) return;
-
-  const typedRaw = input.value;
-  const typed = typedRaw.normalize("NFKC"); // لا نقص trim هون لحتى يكون "الحرف التالي" منطقي
+  const typed = input.value;
   const next = c.foreign.charAt(typed.length);
   logHelp("typing", `الحرف التالي: ${next || "(لا يوجد)"}`);
   openModal("مساعدة", `الحرف التالي: <b>${escapeHTML(next || "")}</b>`, [
@@ -1609,26 +1515,21 @@ function afterGameFinished(gameKey) {
   const done4 = ["matching","flip","scrambled","typing"].every(g => PLAY.playedGames.includes(g));
   if (done4) $("#btnNextGame").style.display = "none";
 
-  const buttons = [];
-
-  if (!done4) {
-    buttons.push(makeBtn(`<span class="material-icons">sports_esports</span> اللعبة التالية`, "btn btn--primary", () => {
-      closeModal();
-      launchNextGame();
-    }));
-  }
-
-  buttons.push(makeBtn(`<span class="material-icons">task_alt</span> تقييم البطاقات`, "btn btn--primary", () => {
-    closeModal();
-    goToHint();
-  }));
-
   openModal("تم إنهاء اللعبة", `
     <div class="modalRow">
       <div class="muted">اللعبة: <b>${escapeHTML(gameTitle(gameKey))}</b></div>
-      <div class="muted" style="margin-top:8px">يمكنك الانتقال للتقييم أو متابعة الألعاب المتبقية.</div>
+      <div class="muted" style="margin-top:8px">يمكنك اختيار اللعبة التالية أو الانتقال لتقييم البطاقات.</div>
     </div>
-  `, buttons);
+  `, [
+    makeBtn(`<span class="material-icons">sports_esports</span> اللعبة التالية`, "btn btn--primary", () => {
+      closeModal();
+      if (!done4) launchNextGame();
+    }),
+    makeBtn(`<span class="material-icons">task_alt</span> تقييم البطاقات`, "btn btn--primary", () => {
+      closeModal();
+      goToHint();
+    })
+  ]);
 }
 
 /* ---------- Hint ---------- */
@@ -1707,7 +1608,7 @@ function rateHint(cardId, evalText) {
 
   PLAY.hintIndex++;
   AudioFX.beep("ok");
-  scheduleSave("hintRate");
+  saveState(STATE);
   renderHintCard();
 }
 
@@ -1723,7 +1624,7 @@ function finishHintAll() {
   STATE.meta.lastAttendanceDateKey = today;
 
   STATE.meta.lastActivity = `تم تسجيل حضور اليوم. ربح: ذهب ${PLAY.goldDelta}, XP ${PLAY.xpDelta}, تقييم ${PLAY.ratingDelta}.`;
-  scheduleSave("finishHintAll");
+  saveState(STATE);
 
   AudioFX.beep("coin");
   AudioFX.beep("rank");
@@ -1762,7 +1663,7 @@ function handleAbortLesson() {
   if (PLAY && !PLAY.completedHintAll) {
     cancelLesson();
     STATE.meta.lastActivity = "تم إلغاء الدرس لعدم إكمال تقييم البطاقات.";
-    scheduleSave("abortLesson");
+    saveState(STATE);
   }
   endPlay(true);
 }
@@ -1786,7 +1687,7 @@ function buyExtraCard() {
   STATE.wallet.gold -= 100;
   STATE.inventory.extraCardsBought += 1;
   STATE.meta.lastActivity = "تم شراء بطاقة إضافية لليوم.";
-  scheduleSave("buyExtraCard");
+  saveState(STATE);
   AudioFX.beep("coin");
   refreshHUD();
 }
@@ -1801,7 +1702,7 @@ function buySkip() {
   STATE.wallet.gold -= 900;
   STATE.inventory.skip += 1;
   STATE.meta.lastActivity = "تم شراء تخطي.";
-  scheduleSave("buySkip");
+  saveState(STATE);
   AudioFX.beep("coin");
   refreshHUD();
 }
@@ -1816,7 +1717,7 @@ function buyHelp() {
   STATE.wallet.gold -= 150;
   STATE.inventory.help += 1;
   STATE.meta.lastActivity = "تم شراء مساعدة.";
-  scheduleSave("buyHelp");
+  saveState(STATE);
   AudioFX.beep("coin");
   refreshHUD();
 }
@@ -1831,7 +1732,7 @@ function buyFuel() {
   STATE.wallet.gold -= 250;
   STATE.inventory.fuel = (STATE.inventory.fuel || 0) + 1;
   STATE.meta.lastActivity = "تم شراء وقود.";
-  scheduleSave("buyFuel");
+  saveState(STATE);
   AudioFX.beep("coin");
   refreshHUD();
 }
@@ -1868,7 +1769,7 @@ function importJSON(file) {
       const obj = JSON.parse(reader.result);
       if (!obj.wallet || !obj.cards || !obj.groups) throw new Error("invalid");
       STATE = obj;
-      scheduleSave("import");
+      saveState(STATE);
       refreshAll();
       AudioFX.beep("ok");
       openModal("تم", "تم الاستيراد بنجاح.", [
@@ -1884,110 +1785,9 @@ function importJSON(file) {
   reader.readAsText(file);
 }
 
-/* ---------- Account pill ---------- */
-function wireUserPill(){
-  $("#userPill").onclick = () => {
-    AudioFX.beep("click");
-    openModal("الحساب", `
-      <div class="modalRow">
-        <div><b>الاسم:</b> ${escapeHTML($("#userLabel").textContent)}</div>
-        <div class="muted" style="margin-top:8px">${escapeHTML(USER.email || "")}</div>
-        <div class="tiny muted" style="margin-top:10px">يمكنك تسجيل الخروج أو حذف الحساب نهائيًا.</div>
-      </div>
-    `, [
-      makeBtn(`<span class="material-icons">logout</span> تسجيل الخروج`, "btn btn--primary", async ()=>{
-        closeModal();
-        await signOut(auth);
-        window.location.replace("login.html");
-      }),
-      makeBtn(`حذف الحساب`, "btn btn--danger", async ()=>{
-        closeModal();
-        await confirmDeleteAccount();
-      })
-    ]);
-  };
-}
-
-async function confirmDeleteAccount(){
-  openModal("تأكيد حذف الحساب", `
-    <div class="modalRow">
-      <div style="font-weight:900">هل تريد حذف حسابك؟</div>
-      <div class="muted" style="margin-top:8px">هذا الإجراء لا يمكن التراجع عنه.</div>
-    </div>
-  `, [
-    makeBtn("إلغاء","btn", closeModal),
-    makeBtn("متابعة","btn btn--danger", ()=>{
-      closeModal();
-      openModal("تأكيد أخير", `
-        <div class="modalRow">
-          <div style="font-weight:900">ستفقد جميع بياناتك وتقدمك.</div>
-          <div class="muted" style="margin-top:8px">هل أنت متأكد 100%؟</div>
-        </div>
-      `, [
-        makeBtn("إلغاء","btn", closeModal),
-        makeBtn("نعم، احذف نهائيًا","btn btn--danger", async ()=>{
-          closeModal();
-          await deleteAccountFlow();
-        })
-      ], {closable:false});
-    })
-  ], {closable:false});
-}
-
-async function deleteAccountFlow(){
-  try{
-    // قد نحتاج reauth
-    const u = auth.currentUser;
-    if (!u) return;
-
-    // جرّب حذف وثيقة Firestore أولاً
-    try{ await deleteDoc(doc(db,"users",u.uid)); }catch{}
-
-    // reauth حسب provider
-    const providerId = (u.providerData?.[0]?.providerId) || "password";
-    if (providerId === "google.com") {
-      await reauthenticateWithPopup(u, googleProvider);
-    } else {
-      // password: اطلب كلمة مرور
-      const body = `
-        <div class="modalRow">
-          <div class="muted">أدخل كلمة المرور لتأكيد الحذف:</div>
-          <input id="reauthPass" type="password" style="width:100%;margin-top:10px;padding:12px 14px;border-radius:14px;border:1px solid rgba(255,255,255,.10);background:rgba(0,0,0,.22);color:#EAF0FF;outline:none" />
-        </div>
-      `;
-      openModal("تأكيد كلمة المرور", body, [
-        makeBtn("إلغاء","btn", ()=>{ closeModal(); }),
-        makeBtn("تأكيد","btn btn--danger", async ()=>{
-          const p = document.querySelector("#reauthPass")?.value || "";
-          if (!p) return;
-          try{
-            const cred = EmailAuthProvider.credential(u.email, p);
-            await reauthenticateWithCredential(u, cred);
-            closeModal();
-            await deleteUser(u);
-            window.location.replace("login.html");
-          }catch{
-            // فشل
-          }
-        })
-      ], {closable:false});
-      return;
-    }
-
-    await deleteUser(u);
-    window.location.replace("login.html");
-  }catch(e){
-    openModal("فشل", "تعذر حذف الحساب. حاول مرة أخرى.", [
-      makeBtn("إغلاق","btn btn--primary", closeModal)
-    ]);
-  }
-}
-
 /* ---------- Before unload rules ---------- */
 function enforceAddLockOnUnload() {
   window.addEventListener("beforeunload", () => {
-    if (!STATE) return;
-
     if (addLockActiveToday()) {
       const key = getTodayGroupKey();
       const g = STATE.groups[key];
@@ -1997,20 +1797,18 @@ function enforceAddLockOnUnload() {
       }
       STATE.meta.addLockDateKey = null;
       STATE.meta.lastActivity = "تم حذف إضافة اليوم غير المكتملة بسبب الخروج قبل 4 بطاقات.";
-      try{ localStorage.setItem(CACHE_KEY(USER.uid), JSON.stringify(STATE)); }catch{}
+      saveState(STATE);
     }
-
     if (PLAY && !PLAY.completedHintAll) {
       cancelLesson();
       STATE.meta.lastActivity = "تم إلغاء الدرس لعدم إكمال تقييم البطاقات.";
-      try{ localStorage.setItem(CACHE_KEY(USER.uid), JSON.stringify(STATE)); }catch{}
+      saveState(STATE);
     }
   });
 }
 
 /* ---------- Wire UI ---------- */
 function wireUI() {
-  // Nav
   $$(".nav__btn").forEach(b => {
     b.onclick = () => {
       AudioFX.beep("click");
@@ -2018,11 +1816,9 @@ function wireUI() {
     };
   });
 
-  // Home
   $("#btnStartPlay").onclick = () => { AudioFX.beep("click"); handleStartPlay(); };
   $("#btnQuickAdd").onclick = () => { AudioFX.beep("click"); showView("add"); };
 
-  // Add
   $("#btnSaveCard").onclick = () => { AudioFX.beep("click"); saveNewCard(); };
   $("#btnExitAdd").onclick = () => { AudioFX.beep("click"); confirmExitAddView(); };
 
@@ -2030,7 +1826,6 @@ function wireUI() {
     $(id).addEventListener("input", () => setLockOnAnyInput());
   });
 
-  // Store
   $("#view-store").addEventListener("click", (e) => {
     const btn = e.target.closest("button[data-buy]");
     if (!btn) return;
@@ -2042,7 +1837,6 @@ function wireUI() {
     if (k === "fuel") buyFuel();
   });
 
-  // Cards
   $("#cardsSearch").addEventListener("input", (e)=> refreshCardsList(e.target.value));
   $("#btnExport").onclick = () => { AudioFX.beep("click"); exportJSON(); };
   $("#importFile").addEventListener("change", (e)=> {
@@ -2051,12 +1845,10 @@ function wireUI() {
     e.target.value = "";
   });
 
-  // Game
   $("#btnAbortLesson").onclick = () => { AudioFX.beep("click"); handleAbortLesson(); };
   $("#btnNextGame").onclick = () => { AudioFX.beep("click"); launchNextGame(); };
   $("#btnGoHint").onclick = () => { AudioFX.beep("click"); goToHint(); };
 
-  // Help ? buttons
   $$(".qBtn").forEach(b => {
     b.onclick = () => {
       AudioFX.beep("click");
@@ -2066,8 +1858,6 @@ function wireUI() {
       ]);
     };
   });
-
-  wireUserPill();
 }
 
 /* ---------- Refresh all ---------- */
@@ -2079,35 +1869,29 @@ function refreshAll() {
   refreshCardsList($("#cardsSearch")?.value || "");
 }
 
-/* ---------- Auth gate + Init ---------- */
-onAuthStateChanged(auth, async (user) => {
-  if (!user) {
-    window.location.replace("login.html");
-    return;
-  }
-  if (!user.emailVerified) {
-    window.location.replace("verify.html");
-    return;
-  }
-
-  USER = user;
-
-  // اسم المستخدم في الواجهة
-  $("#userLabel").textContent = user.displayName || "مستخدم";
-
-  await loadFromCloudOrCache();
-
-  // ضبط الاسم من Firestore إن وجد
-  try{
-    const snap = await getDoc(doc(db,"users",user.uid));
-    if (snap.exists()) {
-      const dn = snap.data()?.displayName;
-      if (dn) $("#userLabel").textContent = dn;
+/* =========================================================
+   ✅ NEW: Live day-change watcher (midnight update even if app is open)
+   ========================================================= */
+let __dayWatchTimer = null;
+function startDayWatcher(){
+  if (__dayWatchTimer) clearInterval(__dayWatchTimer);
+  __dayWatchTimer = setInterval(() => {
+    const real = nowISODateKey();
+    if (real !== STATE.inventory.dateKey) {
+      ensureDayRollover();
+      refreshAll();
+      checkOverdueModal();
     }
-  }catch{}
+  }, 30 * 1000);
+}
 
+/* ---------- Init ---------- */
+(function init() {
+  ensureDayRollover();
+  getOrCreateTodayGroup();
   wireUI();
   enforceAddLockOnUnload();
   refreshAll();
   checkOverdueModal();
-});
+  startDayWatcher();
+})();
