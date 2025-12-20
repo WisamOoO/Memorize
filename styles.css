@@ -51,20 +51,6 @@ input, button, textarea { font: inherit; }
   margin-inline:auto;
 }
 
-/* Center Gate (Auth pages) */
-.centerGate{
-  min-height:100vh;
-  display:grid;
-  place-items:center;
-  padding:16px;
-}
-.gatePanel{
-  width:min(520px, 100%);
-}
-.brand--center{justify-content:center}
-.brand--center .brand__text{text-align:center}
-.brand--center .brand__logo{margin-inline:auto}
-
 /* HUD */
 .hud{
   display:flex;
@@ -105,11 +91,8 @@ input, button, textarea { font: inherit; }
   white-space: nowrap;
 }
 .pill .material-icons{font-size:18px; opacity:.95;}
-.pill--btn{
-  cursor:pointer;
-  transition: transform .15s ease, background .2s ease;
-}
-.pill--btn:hover{transform: translateY(-1px); background: rgba(255,255,255,.08);}
+.pill--btn{cursor:pointer}
+.pill--btn:hover{background: rgba(255,255,255,.09)}
 
 /* NAV */
 .nav{
@@ -164,7 +147,9 @@ input, button, textarea { font: inherit; }
     padding: 10px 10px;
     border-radius: 14px;
   }
-  .nav__btn span:last-child{font-size: 12px;}
+  .nav__btn span:last-child{
+    font-size: 12px;
+  }
 }
 
 /* VIEWS */
@@ -186,11 +171,6 @@ input, button, textarea { font: inherit; }
   box-shadow: var(--shadow);
   padding:18px;
   overflow:hidden;
-  animation: popIn .18s ease;
-}
-@keyframes popIn{
-  from{transform: translateY(6px); opacity:.0}
-  to{transform: translateY(0); opacity:1}
 }
 @media (max-width: 420px){
   .panel{ padding:14px; border-radius: 16px; }
@@ -235,7 +215,6 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
   gap:10px;
   transition: transform .15s ease, background .2s ease, border-color .2s ease, box-shadow .2s ease;
   max-width: 100%;
-  text-decoration:none;
 }
 .btn:hover{transform: translateY(-1px); background: rgba(255,255,255,.08);}
 .btn:active{transform: translateY(0px) scale(.99);}
@@ -319,7 +298,6 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
   gap:12px;
   margin-top:14px;
 }
-.formGrid--1{grid-template-columns:1fr;}
 @media (max-width: 980px){
   .formGrid{grid-template-columns:1fr;}
 }
@@ -517,7 +495,6 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
   font-weight:900;
   user-select:none;
   overflow-wrap:anywhere;
-  position:relative;
 }
 .tile:hover{transform: translateY(-1px); background: rgba(255,255,255,.07);}
 .tile.sel{
@@ -529,20 +506,21 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
   background: linear-gradient(135deg, rgba(124,58,237,.22), rgba(6,182,212,.14));
 }
 
-/* Visual feedback */
-.tile.okFlash{animation: okPulse .25s ease;}
-@keyframes okPulse{
-  from{transform: scale(1); box-shadow: 0 0 0 0 rgba(34,197,94,.0);}
-  to{transform: scale(1.02); box-shadow: 0 0 0 10px rgba(34,197,94,.12);}
+/* Feedback animations */
+@keyframes mgPop {
+  0%{transform:scale(1)}
+  50%{transform:scale(1.06)}
+  100%{transform:scale(1)}
 }
-.tile.badFlash{animation: badShake .35s ease;}
-@keyframes badShake{
-  0%{transform: translateX(0)}
-  25%{transform: translateX(-6px)}
-  50%{transform: translateX(6px)}
-  75%{transform: translateX(-4px)}
-  100%{transform: translateX(0)}
+@keyframes mgShake {
+  0%{transform:translateX(0)}
+  25%{transform:translateX(-6px)}
+  50%{transform:translateX(6px)}
+  75%{transform:translateX(-4px)}
+  100%{transform:translateX(0)}
 }
+.tile.ok{animation: mgPop .22s ease}
+.tile.bad{animation: mgShake .28s ease}
 
 /* Scramble */
 .wordBox{
@@ -661,4 +639,3 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
   background: linear-gradient(135deg, rgba(34,197,94,.22), rgba(6,182,212,.12));
   border-color: rgba(34,197,94,.45);
 }
-a{color: var(--p2);}
