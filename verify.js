@@ -73,4 +73,4 @@ document.querySelector("#btnResend").onclick = async ()=>{
     msg.textContent = "حسابك يحتاج تأكيد البريد. افتح رابط التأكيد المرسل إلى بريدك.";
     document.querySelector("#btnResend").style.display = "";
   });
-})();
+})(); 
