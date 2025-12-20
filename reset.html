@@ -5,7 +5,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#070A12" />
-  <title>استعادة كلمة المرور - Memorize Game</title>
+  <title>Memorize Game - تغيير كلمة المرور</title>
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;600;800&display=swap" rel="stylesheet">
@@ -13,38 +14,52 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div class="centerGate">
-    <div class="panel gatePanel">
-      <div class="brand brand--center">
-        <div class="brand__logo">MG</div>
-        <div class="brand__text">
-          <div class="brand__name">Memorize Game</div>
-          <div class="brand__sub">تغيير كلمة المرور</div>
+  <div id="app">
+    <header class="hud">
+      <div class="hud__left">
+        <div class="brand">
+          <div class="brand__logo">MG</div>
+          <div class="brand__text">
+            <div class="brand__name">Memorize Game</div>
+            <div class="brand__sub">استعادة كلمة المرور</div>
+          </div>
         </div>
       </div>
+      <div class="hud__right"></div>
+    </header>
 
-      <div class="divider"></div>
+    <main class="views" style="padding-top:0">
+      <section class="view active">
+        <div class="panel" style="max-width:720px;margin:0 auto;">
+          <div class="panel__head">
+            <h2>نسيت كلمة المرور</h2>
+            <div class="muted">سيتم إرسال رابط تغيير كلمة المرور</div>
+          </div>
 
-      <div class="formGrid formGrid--1">
-        <div class="field">
-          <label>أدخل بريدك لإرسال رابط تغيير كلمة المرور</label>
-          <input id="email" type="email" placeholder="name@example.com" />
+          <div class="formGrid" style="grid-template-columns:1fr;">
+            <div class="field">
+              <label>البريد الإلكتروني</label>
+              <input id="rsEmail" type="email" autocomplete="email" placeholder="name@example.com" />
+            </div>
+          </div>
+
+          <div class="rowActions" style="margin-top:14px">
+            <button class="btn btn--primary" id="btnSendReset">
+              <span class="material-icons">send</span> إرسال الرابط
+            </button>
+            <button class="btn" id="btnBackLogin2">
+              <span class="material-icons">arrow_back</span> رجوع
+            </button>
+          </div>
+
+          <div class="muted tiny" id="rsMsg" style="margin-top:12px">—</div>
         </div>
-      </div>
-
-      <div class="rowActions" style="margin-top:12px">
-        <button class="btn btn--primary" id="btnSend">
-          <span class="material-icons">mail</span> إرسال الرابط
-        </button>
-        <a class="btn" href="login.html">
-          <span class="material-icons">arrow_back</span> رجوع
-        </a>
-      </div>
-
-      <div class="tiny muted" id="msg" style="margin-top:12px"></div>
-    </div>
+      </section>
+    </main>
   </div>
 
-  <script type="module" src="reset.js"></script>
+  <div class="modalHost" id="modalHost"></div>
+
+  <script type="module" src="auth.js"></script>
 </body>
 </html>
