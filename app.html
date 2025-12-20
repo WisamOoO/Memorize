@@ -267,14 +267,17 @@
           </div>
 
           <div class="searchRow">
-            <input id="cardsSearch" placeholder="بحث..." />
-            <button class="btn btn--small" id="btnExport">
-              <span class="material-icons">download</span> تصدير JSON
+            <!-- زر لعب الآن (يمين) -->
+            <button class="btn btn--small btn--primary" id="btnCardsPlay">
+              <span class="material-icons">sports_esports</span> لعب الآن
             </button>
-            <label class="btn btn--small btn--ghost fileBtn">
-              <span class="material-icons">upload</span> استيراد JSON
-              <input type="file" id="importFile" accept="application/json" hidden />
-            </label>
+
+            <input id="cardsSearch" placeholder="بحث..." />
+
+            <!-- زر تحديد (يسار) -->
+            <button class="btn btn--small" id="btnCardsSelect">
+              <span class="material-icons">checklist</span> تحديد
+            </button>
           </div>
 
           <div class="cardsList" id="cardsList"></div>
