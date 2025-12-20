@@ -7,18 +7,15 @@ import {
   accountLevelFromXP,
   difficultyD, levelMultiplier, speedFactor,
   targetProgressForRank, tierMaxSub,
-  ensureUserDoc, watchUserState,
-  saveMeta, saveCard, saveCardsBatch, deleteCardsBatch,
-  saveGroup, setIgnored, setIgnoredBatch,
-  saveUserState,
+  ensureUserDoc, watchUserState, saveUserState,
   doLogout, doDeleteAccountHard, reauthWithPassword
 } from "./auth-guard.js";
 
 /* =========================
-   State (Cloud only, split)
+   State (Cloud only)
    ========================= */
 let USER = null;
-let STATE = null;           // composed from cloud
+let STATE = null;
 let UNSUB = null;
 
 const MAX_DAILY_BASE = 10;
@@ -34,9 +31,8 @@ function getOrCreateTodayGroup(){
   const today = getTodayKey();
   if (!STATE.groups[today]){
     STATE.groups[today] = { id: today, name: formatGroupName(today), dateKey: today, cardIds: [] };
-    return { group: STATE.groups[today], created: true };
   }
-  return { group: STATE.groups[today], created: false };
+  return STATE.groups[today];
 }
 
 function todayCapacity(){
@@ -52,7 +48,7 @@ function allCardsArray(){
 }
 
 /* =========================
-   Audio FX (simple)
+   Audio FX
    ========================= */
 const AudioFX = (() => {
   let ctx=null;
@@ -158,36 +154,28 @@ function burstFX(xPct=50,yPct=50,count=12){
 }
 
 /* =========================
-   Daily progression (NO LOOP)
+   Daily progression
    ========================= */
 function advanceCardsUpToToday(){
   const today = getTodayKey();
   const lastOpen = STATE.meta.lastOpenDateKey || today;
   const delta = daysBetween(lastOpen, today);
   if (delta <= 0){
-    if (STATE.meta.lastOpenDateKey !== today) STATE.meta.lastOpenDateKey = today;
-    return { metaChanged:false, changedCards:[], metaOnly:false };
+    STATE.meta.lastOpenDateKey = today;
+    return;
   }
 
-  let metaChanged = false;
-  const changedCards = [];
-
-  // streak/fuel logic
   const yesterday = addDays(today, -1);
   if (STATE.meta.lastAttendanceDateKey !== yesterday && STATE.meta.lastAttendanceDateKey !== today){
     if ((STATE.inventory.fuel||0) > 0){
       STATE.inventory.fuel -= 1;
       STATE.meta.lastActivity = "تم استخدام 1 وقود لحماية الحماسة.";
-      metaChanged = true;
+      AudioFX.beep("coin");
     } else {
-      if (STATE.meta.streak !== 0){
-        STATE.meta.streak = 0;
-        metaChanged = true;
-      }
+      STATE.meta.streak = 0;
     }
   }
 
-  // progress cards day by day
   const cards = Object.values(STATE.cards||{});
   for (const c of cards){
     if (!c) continue;
@@ -197,7 +185,6 @@ function advanceCardsUpToToday(){
     if (steps <= 0) continue;
 
     let curKey = lastAdv;
-    let cardChanged = false;
 
     for (let i=0;i<steps;i++){
       const nextKey = addDays(curKey, 1);
@@ -207,53 +194,38 @@ function advanceCardsUpToToday(){
         continue;
       }
 
-      if (c.level < 6) { c.level += 1; cardChanged = true; }
+      if (c.level < 6) c.level += 1;
 
       const age = daysBetween(c.addDateKey, nextKey);
-      if (age >= 30 && c.level !== 7){ c.level = 7; cardChanged = true; }
+      if (age >= 30) c.level = 7;
 
       if (DUE_LEVELS.has(c.level) && STATE.meta.lastAttendanceDateKey !== nextKey){
-        if (c.frozenDue !== true){ c.frozenDue = true; cardChanged = true; }
+        c.frozenDue = true;
       }
 
       curKey = nextKey;
     }
 
-    if (c.lastAdvanceDateKey !== today){
-      c.lastAdvanceDateKey = today;
-      cardChanged = true;
-    }
-
-    if (cardChanged) changedCards.push(c);
+    c.lastAdvanceDateKey = today;
   }
 
-  // refund unused extra cards & reset inventory day
   const unused = Math.max(0, (STATE.inventory.extraCardsBought||0) - (STATE.inventory.extraCardsUsed||0));
   if (unused > 0){
     const refund = Math.floor(unused * 100 * 0.5);
     STATE.wallet.gold += refund;
     STATE.meta.lastActivity = `تمت إعادة ${refund} ذهب (50% من بطاقات إضافية غير مستخدمة).`;
-    metaChanged = true;
+    AudioFX.beep("coin");
   }
+  STATE.inventory.dateKey = today;
+  STATE.inventory.extraCardsBought = 0;
+  STATE.inventory.extraCardsUsed = 0;
+  STATE.meta.addLockDateKey = null;
 
-  if (STATE.inventory.dateKey !== today){
-    STATE.inventory.dateKey = today;
-    STATE.inventory.extraCardsBought = 0;
-    STATE.inventory.extraCardsUsed = 0;
-    STATE.meta.addLockDateKey = null;
-    metaChanged = true;
-  }
-
-  if (STATE.meta.lastOpenDateKey !== today){
-    STATE.meta.lastOpenDateKey = today;
-    metaChanged = true;
-  }
-
-  return { metaChanged, changedCards };
+  STATE.meta.lastOpenDateKey = today;
 }
 
 /* =========================
-   Due
+   Due cards (today)
    ========================= */
 function dueCardsToday(){
   return allCardsArray()
@@ -303,7 +275,7 @@ function applyRatingDelta(delta){
    UI refresh
    ========================= */
 function refreshHUD(){
-  const { group:g } = getOrCreateTodayGroup();
+  const g = getOrCreateTodayGroup();
   qs("#todayLabel").textContent = `مجموعة اليوم: ${g.name}`;
   qs("#goldLabel").textContent = STATE.wallet.gold;
 
@@ -342,7 +314,7 @@ function refreshHUD(){
 }
 
 function refreshTodayList(){
-  const { group:g } = getOrCreateTodayGroup();
+  const g = getOrCreateTodayGroup();
   const list = qs("#todayList");
   list.innerHTML = "";
 
@@ -356,14 +328,12 @@ function refreshTodayList(){
         <div class="cardTile__front">${escapeHTML(c.foreign)}</div>
         <div class="badge">مستوى ${c.level}</div>
       </div>
-      <div class="cardTile__back">${escapeHTML(c.native)}</div>
-      <div class="cardTile__hint">${escapeHTML(c.hint)}</div>
       <div class="badges">
         <span class="badge">${formatGroupName(c.addDateKey)}</span>
         <span class="badge">آخر تقييم: ${escapeHTML(c.lastHintEval || "-")}</span>
       </div>
     `;
-    el.onclick = ()=>el.classList.toggle("open");
+    el.onclick = ()=>openCardDetailsModal(c.id);
     list.appendChild(el);
   });
 
@@ -372,6 +342,62 @@ function refreshTodayList(){
   }
 }
 
+/* =========================
+   Cards page: Modes (NEW)
+   ========================= */
+const CARDS_MODE = {
+  NORMAL: "normal",
+  PLAY_SELECT: "play_select",
+  IGNORE_SELECT: "ignore_select"
+};
+let cardsMode = CARDS_MODE.NORMAL;
+let selectedCardIds = new Set();
+
+function setCardsMode(mode){
+  cardsMode = mode;
+  selectedCardIds = new Set();
+  updateCardsTopButtons();
+  refreshCardsList(qs("#cardsSearch").value || "");
+}
+
+function updateCardsTopButtons(){
+  const btnPlay = qs("#btnCardsPlay");
+  const btnSel  = qs("#btnCardsSelect");
+  const selCount = selectedCardIds.size;
+
+  if (cardsMode === CARDS_MODE.NORMAL){
+    btnPlay.disabled = false;
+    btnPlay.innerHTML = `<span class="material-icons">sports_esports</span> لعب الآن`;
+    btnSel.disabled = false;
+    btnSel.innerHTML = `<span class="material-icons">checklist</span> تحديد`;
+    qs("#cardsSub").textContent = "اضغط البطاقة لعرض التفاصيل.";
+    return;
+  }
+
+  if (cardsMode === CARDS_MODE.PLAY_SELECT){
+    btnSel.innerHTML = `<span class="material-icons">close</span> إلغاء`;
+    btnPlay.innerHTML = `<span class="material-icons">play_circle</span> بداية اللعبة`;
+    btnPlay.disabled = selCount < 4;
+    qs("#cardsSub").textContent = `حدد 4 بطاقات على الأقل للتدريب. (المحدد: ${selCount})`;
+    return;
+  }
+
+  if (cardsMode === CARDS_MODE.IGNORE_SELECT){
+    btnSel.innerHTML = `<span class="material-icons">close</span> إلغاء`;
+    btnPlay.innerHTML = `<span class="material-icons">visibility_off</span> تجاهل`;
+    btnPlay.disabled = selCount < 1;
+    qs("#cardsSub").textContent = `حدد بطاقة أو أكثر لتجاهلها. (المحدد: ${selCount})`;
+    return;
+  }
+}
+
+/* =========================
+   Cards list rendering (UPDATED)
+   - Normal card: foreign + level + last eval only
+   - Click:
+     - in mode select => toggle selection
+     - in normal => open details modal
+========================= */
 function refreshCardsList(filter=""){
   const list = qs("#cardsList");
   list.innerHTML = "";
@@ -395,44 +421,150 @@ function refreshCardsList(filter=""){
     const ignored = !!STATE.ignoreList?.[c.id];
     const el = document.createElement("div");
     el.className = "cardTile";
+
+    // selection UI markers
+    if (cardsMode !== CARDS_MODE.NORMAL && !ignored){
+      el.classList.add("selectable");
+      if (selectedCardIds.has(c.id)) el.classList.add("selected");
+    }
+    if (ignored) el.style.opacity = "0.65";
+
+    const lastEval = c.lastHintEval || "-";
+
     el.innerHTML = `
+      <div class="selMark"><span class="material-icons">check</span></div>
       <div class="cardTile__row">
         <div class="cardTile__front">${escapeHTML(c.foreign)}</div>
         <div class="badge">${ignored ? "متجاهلة" : `مستوى ${c.level}`}</div>
       </div>
-      <div class="cardTile__back">${escapeHTML(c.native)}</div>
-      <div class="cardTile__hint">${escapeHTML(c.hint)}</div>
       <div class="badges">
-        <span class="badge">آخر تقييم: ${escapeHTML(c.lastHintEval || "-")}</span>
+        <span class="badge">آخر تقييم: ${escapeHTML(lastEval)}</span>
       </div>
     `;
+
     el.onclick = ()=>{
-      openModal("تفاصيل البطاقة", `
-        <div class="modalRow">
-          <div><b>النص:</b> ${escapeHTML(c.foreign)}</div>
-          <div><b>الترجمة:</b> ${escapeHTML(c.native)}</div>
-          <div><b>التلميح:</b> ${escapeHTML(c.hint)}</div>
-          <div><b>المستوى:</b> ${ignored ? "متجاهلة" : c.level}</div>
-          <div><b>آخر تقييم:</b> ${escapeHTML(c.lastHintEval || "-")}</div>
-        </div>
-      `, [
-        makeBtn(`<span class="material-icons">visibility_off</span> ${ignored ? "إلغاء التجاهل" : "تجاهل"}`, "btn btn--primary", async ()=>{
-          if (ignored){
-            delete STATE.ignoreList[c.id];
-            await setIgnored(USER.uid, c.id, false);
-          } else {
-            STATE.ignoreList[c.id] = true;
-            await setIgnored(USER.uid, c.id, true);
-          }
-          STATE.meta.lastActivity = "تم تحديث قائمة التجاهل.";
-          await saveMeta(USER.uid, { meta: STATE.meta });
-          closeModal();
-        }),
-        makeBtn(`<span class="material-icons">close</span> إغلاق`, "btn", closeModal)
-      ]);
+      if (cardsMode === CARDS_MODE.NORMAL){
+        openCardDetailsModal(c.id);
+        return;
+      }
+
+      if (ignored) return; // لا يسمح بتحديد المتجاهلة
+      // toggle selection
+      if (selectedCardIds.has(c.id)) selectedCardIds.delete(c.id);
+      else selectedCardIds.add(c.id);
+
+      updateCardsTopButtons();
+      refreshCardsList(qs("#cardsSearch").value || "");
     };
+
     list.appendChild(el);
   });
+}
+
+/* =========================
+   Card details modal (UPDATED)
+   - show: foreign, native, hint, groups, level, last eval
+   - buttons: close / ignore / edit
+   - edit does NOT change level or last eval
+========================= */
+function groupNameByKey(k){
+  const g = STATE.groups?.[k];
+  if (!g) return formatGroupName(k);
+  return g.name || formatGroupName(k);
+}
+
+function openCardDetailsModal(cardId){
+  const c = STATE.cards?.[cardId];
+  if (!c) return;
+
+  const ignored = !!STATE.ignoreList?.[c.id];
+  const groups = (c.groupKeys || []).map(k=>groupNameByKey(k));
+
+  const groupsHTML = groups.length
+    ? `<div class="badges">${groups.map(n=>`<span class="badge">${escapeHTML(n)}</span>`).join("")}</div>`
+    : `<div class="muted">لا توجد مجموعات.</div>`;
+
+  openModal("تفاصيل البطاقة", `
+    <div class="modalRow">
+      <div><b>النص:</b> ${escapeHTML(c.foreign)}</div>
+      <div style="margin-top:8px"><b>الترجمة:</b> ${escapeHTML(c.native)}</div>
+      <div style="margin-top:8px"><b>التلميح:</b> ${escapeHTML(c.hint)}</div>
+      <div class="divider"></div>
+      <div><b>المجموعات:</b></div>
+      ${groupsHTML}
+      <div class="divider"></div>
+      <div><b>المستوى:</b> ${ignored ? "متجاهلة" : c.level}</div>
+      <div><b>آخر تقييم:</b> ${escapeHTML(c.lastHintEval || "-")}</div>
+    </div>
+  `, [
+    makeBtn(`<span class="material-icons">edit</span> تعديل`, "btn btn--primary", ()=>{
+      closeModal();
+      openEditCardModal(cardId);
+    }),
+    makeBtn(`<span class="material-icons">visibility_off</span> ${ignored ? "إلغاء التجاهل" : "تجاهل"}`, "btn", async ()=>{
+      if (ignored) delete STATE.ignoreList[c.id];
+      else STATE.ignoreList[c.id] = true;
+      STATE.meta.lastActivity = "تم تحديث تجاهل البطاقة.";
+      await saveUserState(USER.uid, STATE);
+      closeModal();
+      refreshCardsList(qs("#cardsSearch").value || "");
+      refreshHUD();
+    }),
+    makeBtn(`<span class="material-icons">close</span> إغلاق`, "btn btn--danger", closeModal)
+  ]);
+}
+
+function openEditCardModal(cardId){
+  const c = STATE.cards?.[cardId];
+  if (!c) return;
+
+  openModal("تعديل البطاقة", `
+    <div class="modalRow">
+      <div class="formGrid one">
+        <div class="field">
+          <label>النص الأصلي</label>
+          <input id="editFront" maxlength="45" value="${escapeHTML(c.foreign)}" />
+          <div class="field__sub">حتى 45 حرف</div>
+        </div>
+        <div class="field">
+          <label>الترجمة / المعنى</label>
+          <input id="editBack" maxlength="45" value="${escapeHTML(c.native)}" />
+          <div class="field__sub">حتى 45 حرف</div>
+        </div>
+        <div class="field">
+          <label>التلميح</label>
+          <input id="editHint" maxlength="60" value="${escapeHTML(c.hint)}" />
+          <div class="field__sub">حتى 60 حرف</div>
+        </div>
+      </div>
+      <div class="muted tiny">ملاحظة: التعديل لا يغيّر مستوى البطاقة ولا آخر تقييم.</div>
+    </div>
+  `, [
+    makeBtn(`<span class="material-icons">save</span> حفظ`, "btn btn--primary", async ()=>{
+      const nf = qs("#editFront").value.trim();
+      const nb = qs("#editBack").value.trim();
+      const nh = qs("#editHint").value.trim();
+      if (!nf || !nb || !nh){
+        AudioFX.beep("bad");
+        openModal("خطأ","كل الحقول إلزامية.",[makeBtn("إغلاق","btn btn--primary", closeModal)]);
+        return;
+      }
+
+      // تعديل النص فقط بدون لمس المستوى/التقييم
+      c.foreign = nf;
+      c.native  = nb;
+      c.hint    = nh;
+
+      STATE.meta.lastActivity = "تم تعديل البطاقة.";
+      await saveUserState(USER.uid, STATE);
+
+      AudioFX.beep("ok");
+      closeModal();
+      refreshCardsList(qs("#cardsSearch").value || "");
+      refreshTodayList();
+    }),
+    makeBtn(`<span class="material-icons">close</span> إلغاء`, "btn btn--danger", closeModal)
+  ], {closable:false});
 }
 
 /* =========================
@@ -448,13 +580,15 @@ function showView(name){
     refreshTodayList();
   }
   if (name==="cards"){
+    // reset modes when entering cards view
+    if (cardsMode !== CARDS_MODE.NORMAL) setCardsMode(CARDS_MODE.NORMAL);
     refreshCardsList(qs("#cardsSearch").value || "");
   }
   refreshHUD();
 }
 
 /* =========================
-   Add flow
+   Add flow (cloud)
    ========================= */
 function clearAddInputs(){
   qs("#inFront").value="";
@@ -482,22 +616,15 @@ async function deleteTodayProgressAndExit(){
   const today = getTodayKey();
   const g = STATE.groups[today];
   if (g){
-    const ids = g.cardIds.slice();
-    ids.forEach(id=>{
+    g.cardIds.forEach(id=>{
       delete STATE.cards[id];
       delete STATE.ignoreList[id];
     });
     g.cardIds = [];
-
-    await deleteCardsBatch(USER.uid, ids);
-    await setIgnoredBatch(USER.uid, ids, false);
-    await saveGroup(USER.uid, g);
   }
-
   STATE.meta.addLockDateKey = null;
   STATE.meta.lastActivity = "تم حذف إضافة اليوم غير المكتملة.";
-  await saveMeta(USER.uid, { meta: STATE.meta });
-
+  await saveUserState(USER.uid, STATE);
   closeModal();
   showView("home");
 }
@@ -540,7 +667,7 @@ async function saveNewCard(){
     return;
   }
 
-  const { group:g, created } = getOrCreateTodayGroup();
+  const g = getOrCreateTodayGroup();
   const id = uuid();
   const today = getTodayKey();
 
@@ -570,28 +697,22 @@ async function saveNewCard(){
   if (g.cardIds.length >= MIN_DAILY_FIRST) STATE.meta.addLockDateKey = null;
 
   STATE.meta.lastActivity = `تمت إضافة بطاقة جديدة إلى مجموعة ${g.name}.`;
-
-  // persist split
-  await saveCard(USER.uid, card);
-  if (created) await saveGroup(USER.uid, g);
-  else await saveGroup(USER.uid, g);
-
-  await saveMeta(USER.uid, { meta: STATE.meta, inventory: STATE.inventory });
+  await saveUserState(USER.uid, STATE);
 
   clearAddInputs();
   AudioFX.beep("ok");
 }
 
 /* =========================
-   Overdue modal (blocking + optional callback)
+   Overdue modal
    ========================= */
-function checkOverdueModal(onResolved=null){
+function checkOverdueModal(){
   const today = getTodayKey();
   const dueGroups = dueGroupsToday();
-  if (dueGroups.length === 0) return false;
+  if (dueGroups.length === 0) return;
 
-  if (STATE.meta.resolvedOverdueDateKey === today) return false;
-  if (STATE.meta.lastAttendanceDateKey === today) return false;
+  if (STATE.meta.resolvedOverdueDateKey === today) return;
+  if (STATE.meta.lastAttendanceDateKey === today) return;
 
   const decisions = {};
   let body = `<div class="muted" style="margin-bottom:10px">لديك مجموعات يومية مستحقة. اختر إجراءً لكل مجموعة ثم اضغط "حسنًا".</div>`;
@@ -626,10 +747,6 @@ function checkOverdueModal(onResolved=null){
     const missing = dueGroups.filter(g=>!decisions[g.id]);
     if (missing.length){ AudioFX.beep("bad"); return; }
 
-    const cardsToSave = [];
-    const ignoreToSet = [];
-    const ignoreToUnset = []; // not used now but ready
-
     dueGroups.forEach(g=>{
       const d = decisions[g.id];
       if (d === "reset"){
@@ -638,36 +755,22 @@ function checkOverdueModal(onResolved=null){
           if (c){
             c.level = 0;
             c.frozenDue = false;
-            cardsToSave.push(c);
           }
         });
       } else if (d === "ignore"){
-        g.cardIds.forEach(id=>{
-          STATE.ignoreList[id] = true;
-          ignoreToSet.push(id);
-        });
+        g.cardIds.forEach(id=>STATE.ignoreList[id]=true);
       } else {
-        // review: فقط فك التجميد
         g.cardIds.forEach(id=>{
           const c = STATE.cards[id];
-          if (c && c.frozenDue){
-            c.frozenDue = false;
-            cardsToSave.push(c);
-          }
+          if (c) c.frozenDue = false;
         });
       }
     });
 
-    if (cardsToSave.length) await saveCardsBatch(USER.uid, cardsToSave);
-    if (ignoreToSet.length) await setIgnoredBatch(USER.uid, ignoreToSet, true);
-    if (ignoreToUnset.length) await setIgnoredBatch(USER.uid, ignoreToUnset, false);
-
     STATE.meta.resolvedOverdueDateKey = today;
     STATE.meta.lastActivity = "تم تحديد إجراء للمجموعات المستحقة.";
-    await saveMeta(USER.uid, { meta: STATE.meta });
-
+    await saveUserState(USER.uid, STATE);
     closeModal();
-    if (typeof onResolved === "function") onResolved();
   });
 
   openModal("مجموعات مستحقة", body, [btnAllReview, btnAllReset, btnAllIgnore, ok], {closable:false});
@@ -691,8 +794,6 @@ function checkOverdueModal(onResolved=null){
       if (btn) btn.classList.add("on");
     });
   }
-
-  return true;
 }
 
 /* =========================
@@ -708,12 +809,107 @@ function shuffle(arr){
   }
   return a;
 }
+
 function buildLessonCards(){ return dueCardsToday(); }
 
-/* ---------------- Timer (per game) ---------------- */
+/* ===== NEW: training lesson by selected cards ===== */
+function startTrainingFromSelected(){
+  const ids = Array.from(selectedCardIds);
+  const cards = ids.map(id=>STATE.cards[id]).filter(Boolean).filter(c=>!STATE.ignoreList?.[c.id]);
+
+  if (cards.length < 4){
+    AudioFX.beep("bad");
+    openModal("تنبيه","يجب تحديد 4 بطاقات على الأقل.",[
+      makeBtn("حسنًا","btn btn--primary", closeModal)
+    ]);
+    return;
+  }
+
+  // ابدأ لعب بدون اعتبار للمستوى
+  const gameQueue = shuffle(["matching","flip","scrambled","typing"]);
+  const dueIds = cards.map(c=>c.id);
+  const thirty = Math.max(1, Math.round(dueIds.length * 0.30));
+  const pick1 = shuffle(dueIds).slice(0, thirty);
+  const remain = dueIds.filter(id=>!pick1.includes(id));
+  const pick2 = shuffle(remain).slice(0, Math.min(thirty, remain.length));
+
+  PLAY = {
+    timer:null, sec:0,
+    goldDelta:0, xpDelta:0, ratingDelta:0,
+    usedHelpInGame:false,
+    cards,
+    gameQueue,
+    playedGames:[],
+    inHint:false,
+    scrambledIds: pick1,
+    typingIds: pick2,
+    hintIndex:0,
+    completedHintAll:false,
+    helpLogs:{matching:[], flip:[], scrambled:[], typing:[]},
+    currentGame:null,
+    trainingMode:true
+  };
+
+  showView("game");
+  qs("#btnNextGame").style.display="";
+  qs("#btnGoHint").style.display="";
+  qs("#btnUseSkip").style.display="";
+  qs("#btnUseHelp").style.display="";
+  qs("#btnHelpLog").style.display="";
+
+  updateHUD();
+  startTimer();
+  launchNextGame();
+}
+
+function startLesson(){
+  const cards = buildLessonCards();
+  if (cards.length === 0){
+    AudioFX.beep("bad");
+    openModal("تنبيه", `لم تقم بإضافة بطاقات لعب لهذا اليوم، قم بإضافة بطاقات جديدة وعد غدًا`, [
+      makeBtn("موافق","btn btn--primary", closeModal)
+    ]);
+    return;
+  }
+
+  const gameQueue = shuffle(["matching","flip","scrambled","typing"]);
+  const dueIds = cards.map(c=>c.id);
+  const thirty = Math.max(1, Math.round(dueIds.length * 0.30));
+  const pick1 = shuffle(dueIds).slice(0, thirty);
+  const remain = dueIds.filter(id=>!pick1.includes(id));
+  const pick2 = shuffle(remain).slice(0, Math.min(thirty, remain.length));
+
+  PLAY = {
+    timer:null, sec:0,
+    goldDelta:0, xpDelta:0, ratingDelta:0,
+    usedHelpInGame:false,
+    cards,
+    gameQueue,
+    playedGames:[],
+    inHint:false,
+    scrambledIds: pick1,
+    typingIds: pick2,
+    hintIndex:0,
+    completedHintAll:false,
+    helpLogs:{matching:[], flip:[], scrambled:[], typing:[]},
+    currentGame:null,
+    trainingMode:false
+  };
+
+  showView("game");
+  qs("#btnNextGame").style.display="";
+  qs("#btnGoHint").style.display="";
+  qs("#btnUseSkip").style.display="";
+  qs("#btnUseHelp").style.display="";
+  qs("#btnHelpLog").style.display="";
+
+  updateHUD();
+  startTimer();
+  launchNextGame();
+}
+
 function startTimer(){
   stopTimer();
-  if (!PLAY) return;
   PLAY.sec=0;
   qs("#hudTime").textContent="0.0s";
   PLAY.timer=setInterval(()=>{
@@ -725,7 +921,6 @@ function stopTimer(){
   if (PLAY?.timer) clearInterval(PLAY.timer);
   if (PLAY) PLAY.timer=null;
 }
-
 function updateHUD(){
   qs("#hudGold").textContent = (PLAY.goldDelta>=0?"+":"") + PLAY.goldDelta;
   qs("#hudXP").textContent   = (PLAY.xpDelta>=0?"+":"") + PLAY.xpDelta;
@@ -772,51 +967,6 @@ function consumeHelpOrAskBuy(){
   return true;
 }
 
-function startLesson(){
-  const cards = buildLessonCards();
-  if (cards.length === 0){
-    AudioFX.beep("bad");
-    openModal("تنبيه", `لم تقم بإضافة بطاقات لعب لهذا اليوم، قم بإضافة بطاقات جديدة وعد غدًا`, [
-      makeBtn("موافق","btn btn--primary", closeModal)
-    ]);
-    return;
-  }
-
-  const gameQueue = shuffle(["matching","flip","scrambled","typing"]);
-  const dueIds = cards.map(c=>c.id);
-  const thirty = Math.max(1, Math.round(dueIds.length * 0.30));
-  const pick1 = shuffle(dueIds).slice(0, thirty);
-  const remain = dueIds.filter(id=>!pick1.includes(id));
-  const pick2 = shuffle(remain).slice(0, Math.min(thirty, remain.length));
-
-  PLAY = {
-    timer:null, sec:0,
-    goldDelta:0, xpDelta:0, ratingDelta:0,
-    usedHelpInGame:false,
-    cards,
-    gameQueue,
-    playedGames:[],
-    inHint:false,
-    scrambledIds: pick1,
-    typingIds: pick2,
-    hintIndex:0,
-    completedHintAll:false,
-    helpLogs:{matching:[], flip:[], scrambled:[], typing:[]},
-    currentGame:null,
-    hintEdits:{} // applied only after finish
-  };
-
-  showView("game");
-  qs("#btnNextGame").style.display="";
-  qs("#btnGoHint").style.display="";
-  qs("#btnUseSkip").style.display="";
-  qs("#btnUseHelp").style.display="";
-  qs("#btnHelpLog").style.display="";
-
-  updateHUD();
-  launchNextGame();
-}
-
 function launchNextGame(){
   PLAY.usedHelpInGame=false;
   const next = PLAY.gameQueue.find(g=>!PLAY.playedGames.includes(g));
@@ -847,8 +997,6 @@ function gameSubtitle(k){
 }
 
 function renderGame(gameKey){
-  stopTimer();
-
   PLAY.currentGame = gameKey;
   qs("#gameArea").innerHTML="";
   qs("#gameTitle").textContent = gameTitle(gameKey);
@@ -867,7 +1015,7 @@ function renderGame(gameKey){
       makeBtn("نعم","btn btn--primary", async ()=>{
         closeModal();
         STATE.inventory.skip -= 1;
-        await saveMeta(USER.uid, { inventory: STATE.inventory });
+        await saveUserState(USER.uid, STATE);
         applyPerfectGameRewards();
         PLAY.playedGames.push(gameKey);
         afterGameFinished(gameKey);
@@ -881,7 +1029,7 @@ function renderGame(gameKey){
 
     STATE.inventory.help -= 1;
     PLAY.usedHelpInGame = true;
-    await saveMeta(USER.uid, { inventory: STATE.inventory });
+    await saveUserState(USER.uid, STATE);
 
     if (gameKey==="matching") matchingHelp();
     if (gameKey==="flip") flipHelp();
@@ -893,8 +1041,6 @@ function renderGame(gameKey){
   };
 
   qs("#btnHelpLog").onclick = ()=>showHelpLog(gameKey);
-
-  if (gameKey!=="hint") startTimer();
 
   if (gameKey==="matching") gameMatching();
   if (gameKey==="flip") gameFlip();
@@ -1020,8 +1166,6 @@ function matchingClick(t, el){
 }
 
 function finishMatching(){
-  stopTimer();
-
   const C=Math.max(1,MATCH.correct);
   const E=MATCH.errors;
   const ER=E/C;
@@ -1066,7 +1210,6 @@ function gameFlip(){
     goldRaw:0
   };
 
-  // عرض 5 ثواني
   tiles.forEach(t=>{
     const el=document.createElement("div");
     el.className="tile";
@@ -1151,8 +1294,6 @@ function flipClick(t, el){
 }
 
 function finishFlip(){
-  stopTimer();
-
   const totalSec=(performance.now()-FLIP.startAt)/1000;
   const avgSec= totalSec/Math.max(1,FLIP.pairs);
   if (avgSec>12){
@@ -1303,8 +1444,6 @@ function renderScrambledCard(){
 }
 
 function finishScrambled(){
-  stopTimer();
-
   const C=Math.max(1,SCR.correct);
   const E=SCR.errors;
   const ER=E/C;
@@ -1396,8 +1535,6 @@ function renderTypingCard(){
 }
 
 function finishTyping(){
-  stopTimer();
-
   const C=Math.max(1,TYP.correct);
   const E=TYP.errors;
   const ER=E/C;
@@ -1585,18 +1722,13 @@ function rateHint(cardId, evalText){
   const c = STATE.cards[cardId];
   if (!c) return;
 
-  const baseLevel = (PLAY.hintEdits[cardId]?.level ?? c.level);
-  let newLevel = baseLevel;
+  c.frozenDue = false;
 
-  if (evalText==="صعب") newLevel = 0;
-  else if (evalText==="متوسط") newLevel = (baseLevel<=3) ? 0 : 2;
+  if (evalText==="صعب") c.level=0;
+  else if (evalText==="متوسط") c.level = (c.level<=3) ? 0 : 2;
 
-  PLAY.hintEdits[cardId] = {
-    level: newLevel,
-    frozenDue: false,
-    lastHintEval: evalText,
-    lastHintEvalAt: Date.now()
-  };
+  c.lastHintEval = evalText;
+  c.lastHintEvalAt = Date.now();
 
   PLAY.hintIndex++;
   AudioFX.beep("ok");
@@ -1606,58 +1738,42 @@ function rateHint(cardId, evalText){
 async function finishHintAll(){
   PLAY.completedHintAll=true;
 
-  // apply hint edits now (only now)
-  const changed = [];
-  Object.entries(PLAY.hintEdits).forEach(([id, e])=>{
-    const c = STATE.cards[id];
-    if (!c) return;
-    c.level = e.level;
-    c.frozenDue = false;
-    c.lastHintEval = e.lastHintEval;
-    c.lastHintEvalAt = e.lastHintEvalAt;
-    changed.push(c);
-  });
-
-  // commit rewards
   STATE.wallet.gold += PLAY.goldDelta;
   STATE.wallet.xp   += PLAY.xpDelta;
   applyRatingDelta(PLAY.ratingDelta);
 
   const today = getTodayKey();
-  if (STATE.meta.lastAttendanceDateKey !== today) STATE.meta.streak += 1;
-  STATE.meta.lastAttendanceDateKey = today;
-  STATE.meta.resolvedOverdueDateKey = today;
 
-  STATE.meta.lastActivity = `تم تسجيل حضور اليوم. ربح: ذهب ${PLAY.goldDelta}, XP ${PLAY.xpDelta}, تقييم ${PLAY.ratingDelta}.`;
+  // في التدريب: لا نغير الستريك ولا lastAttendance
+  if (!PLAY.trainingMode){
+    if (STATE.meta.lastAttendanceDateKey !== today) STATE.meta.streak += 1;
+    STATE.meta.lastAttendanceDateKey = today;
+    STATE.meta.resolvedOverdueDateKey = today;
 
-  // unfreeze only frozen cards (reduce writes)
-  Object.values(STATE.cards||{}).forEach(c=>{
-    if (c && c.frozenDue){
-      c.frozenDue = false;
-      changed.push(c);
-    }
-  });
+    // عند الحضور: فك تجميد أي بطاقات
+    Object.values(STATE.cards||{}).forEach(c=>{
+      if (c) c.frozenDue = false;
+    });
 
-  // persist split
-  if (changed.length) await saveCardsBatch(USER.uid, changed);
-  await saveMeta(USER.uid, {
-    wallet: STATE.wallet,
-    rank: STATE.rank,
-    meta: STATE.meta
-  });
+    STATE.meta.lastActivity = `تم تسجيل حضور اليوم. ربح: ذهب ${PLAY.goldDelta}, XP ${PLAY.xpDelta}, تقييم ${PLAY.ratingDelta}.`;
+  } else {
+    STATE.meta.lastActivity = `تم إنهاء تدريب. ربح: ذهب ${PLAY.goldDelta}, XP ${PLAY.xpDelta}, تقييم ${PLAY.ratingDelta}.`;
+  }
+
+  await saveUserState(USER.uid, STATE);
 
   AudioFX.beep("coin");
   AudioFX.beep("rank");
   burstFX(60,20,18);
 
-  openModal("انتهى الدرس", `
+  openModal(PLAY.trainingMode ? "انتهى التدريب" : "انتهى الدرس", `
     <div class="modalRow">
-      <div style="font-weight:900; font-size:18px">تم تسجيل الحضور.</div>
+      <div style="font-weight:900; font-size:18px">${PLAY.trainingMode ? "تم إنهاء التدريب." : "تم تسجيل الحضور."}</div>
       <div class="divider"></div>
       <div class="muted">ذهب: <b>${PLAY.goldDelta}</b></div>
       <div class="muted">XP: <b>${PLAY.xpDelta}</b></div>
       <div class="muted">تقييم: <b>${PLAY.ratingDelta}</b></div>
-      <div class="muted" style="margin-top:10px">يمكنك إعادة اللعب اليوم للحصول على إحصائيات جديدة، وآخر تقييم هو المعتمد.</div>
+      <div class="muted" style="margin-top:10px">يمكنك إعادة اللعب للحصول على إحصائيات جديدة، وآخر تقييم هو المعتمد.</div>
     </div>
   `, [
     makeBtn(`<span class="material-icons">home</span> العودة للرئيسية`, "btn btn--primary", ()=>{
@@ -1671,7 +1787,6 @@ async function finishHintAll(){
 function cancelLesson(){
   if (!PLAY) return;
   PLAY.goldDelta=0; PLAY.xpDelta=0; PLAY.ratingDelta=0;
-  PLAY.hintEdits = {};
 }
 function endPlay(goHome=false){
   stopTimer();
@@ -1683,13 +1798,13 @@ async function handleAbortLesson(){
   if (PLAY && !PLAY.completedHintAll){
     cancelLesson();
     STATE.meta.lastActivity = "تم إلغاء الدرس لعدم إكمال تقييم البطاقات.";
-    await saveMeta(USER.uid, { meta: STATE.meta });
+    await saveUserState(USER.uid, STATE);
   }
   endPlay(true);
 }
 
 /* =========================
-   Store
+   Store (cloud)
    ========================= */
 async function buyExtraCard(){
   if ((STATE.inventory.extraCardsBought||0) >= 2){
@@ -1709,7 +1824,7 @@ async function buyExtraCard(){
   STATE.wallet.gold -= 100;
   STATE.inventory.extraCardsBought = (STATE.inventory.extraCardsBought||0) + 1;
   STATE.meta.lastActivity = "تم شراء بطاقة إضافية لليوم.";
-  await saveMeta(USER.uid, { wallet: STATE.wallet, inventory: STATE.inventory, meta: STATE.meta });
+  await saveUserState(USER.uid, STATE);
   AudioFX.beep("coin");
 }
 async function buySkip(){
@@ -1723,7 +1838,7 @@ async function buySkip(){
   STATE.wallet.gold -= 900;
   STATE.inventory.skip = (STATE.inventory.skip||0) + 1;
   STATE.meta.lastActivity = "تم شراء تخطي.";
-  await saveMeta(USER.uid, { wallet: STATE.wallet, inventory: STATE.inventory, meta: STATE.meta });
+  await saveUserState(USER.uid, STATE);
   AudioFX.beep("coin");
 }
 async function buyHelp(){
@@ -1737,7 +1852,7 @@ async function buyHelp(){
   STATE.wallet.gold -= 150;
   STATE.inventory.help = (STATE.inventory.help||0) + 1;
   STATE.meta.lastActivity = "تم شراء مساعدة.";
-  await saveMeta(USER.uid, { wallet: STATE.wallet, inventory: STATE.inventory, meta: STATE.meta });
+  await saveUserState(USER.uid, STATE);
   AudioFX.beep("coin");
 }
 async function buyFuel(){
@@ -1751,12 +1866,12 @@ async function buyFuel(){
   STATE.wallet.gold -= 250;
   STATE.inventory.fuel = (STATE.inventory.fuel||0) + 1;
   STATE.meta.lastActivity = "تم شراء وقود.";
-  await saveMeta(USER.uid, { wallet: STATE.wallet, inventory: STATE.inventory, meta: STATE.meta });
+  await saveUserState(USER.uid, STATE);
   AudioFX.beep("coin");
 }
 
 /* =========================
-   Start play (fixed overdue logic)
+   Start play (daily)
    ========================= */
 function handleStartPlay(){
   const cards = buildLessonCards();
@@ -1767,50 +1882,8 @@ function handleStartPlay(){
     ]);
     return;
   }
-
-  // if overdue modal needed: block and then start after resolved
-  const opened = checkOverdueModal(()=>startLesson());
-  if (opened) return;
-
+  checkOverdueModal();
   startLesson();
-}
-
-/* =========================
-   Export/Import
-   ========================= */
-function exportJSON(){
-  const data = JSON.stringify(STATE, null, 2);
-  const blob = new Blob([data], {type:"application/json"});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "memorize_game_backup.json";
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-async function importJSON(file){
-  const reader = new FileReader();
-  reader.onload = async ()=>{
-    try{
-      const obj = JSON.parse(reader.result);
-      if (!obj.wallet || !obj.cards || !obj.groups) throw new Error("invalid");
-
-      // replace (split-safe)
-      await saveUserState(USER.uid, obj, { mode:"replace" });
-
-      AudioFX.beep("ok");
-      openModal("تم", "تم الاستيراد بنجاح.", [
-        makeBtn("إغلاق","btn btn--primary", closeModal)
-      ]);
-    }catch{
-      AudioFX.beep("bad");
-      openModal("خطأ", "ملف غير صالح.", [
-        makeBtn("إغلاق","btn btn--primary", closeModal)
-      ]);
-    }
-  };
-  reader.readAsText(file);
 }
 
 /* =========================
@@ -1823,7 +1896,7 @@ function openAccountModal(){
       <div class="muted" style="margin-top:6px">${escapeHTML(USER.email || "")}</div>
       <div class="divider"></div>
       <div class="muted">يمكنك تسجيل الخروج أو حذف الحساب نهائيًا.</div>
-      <div class="muted tiny">حذف الحساب يؤدي إلى حذف بياناتك من السيرفر (ملاحظة: Firestore لا يحذف subcollections تلقائيًا).</div>
+      <div class="muted tiny">حذف الحساب يؤدي إلى حذف جميع بياناتك من السيرفر.</div>
     </div>
   `, [
     makeBtn(`<span class="material-icons">logout</span> تسجيل الخروج`, "btn btn--primary", async ()=>{
@@ -1917,12 +1990,52 @@ function wireUI(){
   });
 
   qs("#cardsSearch").addEventListener("input", (e)=>refreshCardsList(e.target.value));
-  qs("#btnExport").onclick=()=>{ AudioFX.beep("tap"); exportJSON(); };
-  qs("#importFile").addEventListener("change", (e)=>{
-    const f=e.target.files?.[0];
-    if (f) importJSON(f);
-    e.target.value="";
-  });
+
+  // NEW: cards top buttons behavior
+  qs("#btnCardsPlay").onclick = async ()=>{
+    AudioFX.beep("tap");
+
+    if (cardsMode === CARDS_MODE.NORMAL){
+      setCardsMode(CARDS_MODE.PLAY_SELECT);
+      return;
+    }
+
+    if (cardsMode === CARDS_MODE.PLAY_SELECT){
+      // start training
+      startTrainingFromSelected();
+      // بعد الدخول للعبة، لا نرجع للوضع الطبيعي إلا عند خروج المستخدم، لذلك نتركه كما هو
+      return;
+    }
+
+    if (cardsMode === CARDS_MODE.IGNORE_SELECT){
+      // apply ignore to selected
+      const ids = Array.from(selectedCardIds);
+      if (!ids.length) return;
+
+      ids.forEach(id=>{
+        STATE.ignoreList[id] = true;
+      });
+      STATE.meta.lastActivity = `تم تجاهل ${ids.length} بطاقة.`;
+      await saveUserState(USER.uid, STATE);
+
+      AudioFX.beep("ok");
+      setCardsMode(CARDS_MODE.NORMAL);
+      refreshHUD();
+      return;
+    }
+  };
+
+  qs("#btnCardsSelect").onclick = ()=>{
+    AudioFX.beep("tap");
+
+    if (cardsMode === CARDS_MODE.NORMAL){
+      setCardsMode(CARDS_MODE.IGNORE_SELECT);
+      return;
+    }
+
+    // cancel in any select mode
+    setCardsMode(CARDS_MODE.NORMAL);
+  };
 
   qs("#btnAbortLesson").onclick=()=>{ AudioFX.beep("tap"); handleAbortLesson(); };
   qs("#btnNextGame").onclick=()=>{ AudioFX.beep("tap"); launchNextGame(); };
@@ -1948,10 +2061,8 @@ function wireUI(){
 }
 
 /* =========================
-   Cloud sync start (NO infinite loop)
+   Cloud sync start
    ========================= */
-let UI_WIRED = false;
-
 async function startApp(user){
   USER = user;
   await ensureUserDoc(user);
@@ -1960,44 +2071,23 @@ async function startApp(user){
   UNSUB = watchUserState(user.uid, async (st)=>{
     STATE = st;
 
-    // ensure profile
     STATE.profile = STATE.profile || {};
     STATE.profile.displayName = STATE.profile.displayName || user.displayName || null;
     STATE.profile.email = STATE.profile.email || user.email || null;
 
-    // ensure today group exists locally
-    const { group:tg, created } = getOrCreateTodayGroup();
-    if (created){
-      // create group doc once (no loop)
-      await saveGroup(USER.uid, tg);
-    }
+    advanceCardsUpToToday();
+    getOrCreateTodayGroup();
 
-    // midnight/absence progression - only save if changes happened
-    const prog = advanceCardsUpToToday();
-    if (prog.metaChanged){
-      await saveMeta(USER.uid, {
-        meta: STATE.meta,
-        wallet: STATE.wallet,
-        inventory: STATE.inventory
-      });
-    }
-    if (prog.changedCards?.length){
-      await saveCardsBatch(USER.uid, prog.changedCards);
-    }
+    await saveUserState(USER.uid, STATE);
 
     refreshHUD();
     refreshTodayList();
     refreshCardsList(qs("#cardsSearch")?.value || "");
 
-    // overdue popup (non-start)
     checkOverdueModal();
   });
 
-  if (!UI_WIRED){
-    wireUI();
-    UI_WIRED = true;
-  }
-
+  wireUI();
   showView("home");
 }
 
