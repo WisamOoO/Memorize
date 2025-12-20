@@ -7,16 +7,19 @@ import {
   accountLevelFromXP,
   difficultyD, levelMultiplier, speedFactor,
   targetProgressForRank, tierMaxSub,
-  ensureUserDoc, watchUserState, saveUserState,
+  ensureUserDoc, watchUserState,
+  saveMeta, saveCard, saveCardsBatch, deleteCardsBatch,
+  saveGroup, setIgnored, setIgnoredBatch,
+  saveUserState,
   doLogout, doDeleteAccountHard, reauthWithPassword
 } from "./auth-guard.js";
 
 /* =========================
-   State (Cloud only)
+   State (Cloud only, split)
    ========================= */
 let USER = null;
-let STATE = null;           // latest from cloud
-let UNSUB = null;           // snapshot unsub
+let STATE = null;           // composed from cloud
+let UNSUB = null;
 
 const MAX_DAILY_BASE = 10;
 const MIN_DAILY_FIRST = 4;
@@ -31,8 +34,9 @@ function getOrCreateTodayGroup(){
   const today = getTodayKey();
   if (!STATE.groups[today]){
     STATE.groups[today] = { id: today, name: formatGroupName(today), dateKey: today, cardIds: [] };
+    return { group: STATE.groups[today], created: true };
   }
-  return STATE.groups[today];
+  return { group: STATE.groups[today], created: false };
 }
 
 function todayCapacity(){
@@ -134,7 +138,7 @@ function makeBtn(html, cls="btn", onClick=()=>{}){
 }
 
 /* =========================
-   FX visual (confetti dots)
+   FX visual
    ========================= */
 function burstFX(xPct=50,yPct=50,count=12){
   const layer = qs("#fxLayer");
@@ -154,37 +158,36 @@ function burstFX(xPct=50,yPct=50,count=12){
 }
 
 /* =========================
-   Daily progression FIX (midnight + absence rules)
-   =========================
-   القاعدة:
-   - المستوى يزيد يوميًا تلقائيًا.
-   - إذا وصل في يومٍ ما إلى مستوى عرض (1/3/6/7) ولم يحصل حضور بذلك اليوم،
-     يتجمّد عند هذا المستوى ولا يستمر بالزيادة في الأيام التالية حتى يراجع المستخدم (ويحصل حضور لاحقًا).
-*/
+   Daily progression (NO LOOP)
+   ========================= */
 function advanceCardsUpToToday(){
   const today = getTodayKey();
   const lastOpen = STATE.meta.lastOpenDateKey || today;
   const delta = daysBetween(lastOpen, today);
   if (delta <= 0){
-    STATE.meta.lastOpenDateKey = today;
-    return;
+    if (STATE.meta.lastOpenDateKey !== today) STATE.meta.lastOpenDateKey = today;
+    return { metaChanged:false, changedCards:[], metaOnly:false };
   }
 
-  // معالجة ستريك/وقود عند انتقال الأيام
-  // إذا لم يحصل حضور في يوم lastOpen: يمكن استهلاك وقود يوم واحد فقط عند أول يوم غياب
-  // هنا نطبق منطق بسيط: إذا هناك فجوة يوم/أكثر والحضور ليس على اليوم السابق -> ستريك يصفّر إلا إذا يوجد وقود
+  let metaChanged = false;
+  const changedCards = [];
+
+  // streak/fuel logic
   const yesterday = addDays(today, -1);
   if (STATE.meta.lastAttendanceDateKey !== yesterday && STATE.meta.lastAttendanceDateKey !== today){
     if ((STATE.inventory.fuel||0) > 0){
       STATE.inventory.fuel -= 1;
       STATE.meta.lastActivity = "تم استخدام 1 وقود لحماية الحماسة.";
-      AudioFX.beep("coin");
+      metaChanged = true;
     } else {
-      STATE.meta.streak = 0;
+      if (STATE.meta.streak !== 0){
+        STATE.meta.streak = 0;
+        metaChanged = true;
+      }
     }
   }
 
-  // تقدّم البطاقات يومًا بيوم
+  // progress cards day by day
   const cards = Object.values(STATE.cards||{});
   for (const c of cards){
     if (!c) continue;
@@ -194,53 +197,63 @@ function advanceCardsUpToToday(){
     if (steps <= 0) continue;
 
     let curKey = lastAdv;
+    let cardChanged = false;
 
     for (let i=0;i<steps;i++){
       const nextKey = addDays(curKey, 1);
 
-      // إذا البطاقة “مجمّدة” على مستوى عرض بسبب غياب سابق: لا تزيد
       if (c.frozenDue === true && DUE_LEVELS.has(c.level)){
         curKey = nextKey;
         continue;
       }
 
-      // رفع المستوى حتى 6
-      if (c.level < 6) c.level += 1;
+      if (c.level < 6) { c.level += 1; cardChanged = true; }
 
-      // عمر 30 يوم -> مستوى 7
       const age = daysBetween(c.addDateKey, nextKey);
-      if (age >= 30) c.level = 7;
+      if (age >= 30 && c.level !== 7){ c.level = 7; cardChanged = true; }
 
-      // إذا اليوم الجديد هو يوم عرض، ولم يكن هناك حضور بذلك اليوم → جمّد
-      // ملاحظة: الحضور يعني lastAttendanceDateKey === nextKey
       if (DUE_LEVELS.has(c.level) && STATE.meta.lastAttendanceDateKey !== nextKey){
-        c.frozenDue = true;
+        if (c.frozenDue !== true){ c.frozenDue = true; cardChanged = true; }
       }
 
       curKey = nextKey;
     }
 
-    c.lastAdvanceDateKey = today;
+    if (c.lastAdvanceDateKey !== today){
+      c.lastAdvanceDateKey = today;
+      cardChanged = true;
+    }
+
+    if (cardChanged) changedCards.push(c);
   }
 
-  // تصفير مشتريات البطاقات الإضافية عند بداية يوم جديد + استرجاع 50% إن لم تُستخدم
+  // refund unused extra cards & reset inventory day
   const unused = Math.max(0, (STATE.inventory.extraCardsBought||0) - (STATE.inventory.extraCardsUsed||0));
   if (unused > 0){
     const refund = Math.floor(unused * 100 * 0.5);
     STATE.wallet.gold += refund;
     STATE.meta.lastActivity = `تمت إعادة ${refund} ذهب (50% من بطاقات إضافية غير مستخدمة).`;
-    AudioFX.beep("coin");
+    metaChanged = true;
   }
-  STATE.inventory.dateKey = today;
-  STATE.inventory.extraCardsBought = 0;
-  STATE.inventory.extraCardsUsed = 0;
-  STATE.meta.addLockDateKey = null;
 
-  STATE.meta.lastOpenDateKey = today;
+  if (STATE.inventory.dateKey !== today){
+    STATE.inventory.dateKey = today;
+    STATE.inventory.extraCardsBought = 0;
+    STATE.inventory.extraCardsUsed = 0;
+    STATE.meta.addLockDateKey = null;
+    metaChanged = true;
+  }
+
+  if (STATE.meta.lastOpenDateKey !== today){
+    STATE.meta.lastOpenDateKey = today;
+    metaChanged = true;
+  }
+
+  return { metaChanged, changedCards };
 }
 
 /* =========================
-   Due cards (today)
+   Due
    ========================= */
 function dueCardsToday(){
   return allCardsArray()
@@ -290,7 +303,7 @@ function applyRatingDelta(delta){
    UI refresh
    ========================= */
 function refreshHUD(){
-  const g = getOrCreateTodayGroup();
+  const { group:g } = getOrCreateTodayGroup();
   qs("#todayLabel").textContent = `مجموعة اليوم: ${g.name}`;
   qs("#goldLabel").textContent = STATE.wallet.gold;
 
@@ -329,7 +342,7 @@ function refreshHUD(){
 }
 
 function refreshTodayList(){
-  const g = getOrCreateTodayGroup();
+  const { group:g } = getOrCreateTodayGroup();
   const list = qs("#todayList");
   list.innerHTML = "";
 
@@ -404,10 +417,15 @@ function refreshCardsList(filter=""){
         </div>
       `, [
         makeBtn(`<span class="material-icons">visibility_off</span> ${ignored ? "إلغاء التجاهل" : "تجاهل"}`, "btn btn--primary", async ()=>{
-          if (ignored) delete STATE.ignoreList[c.id];
-          else STATE.ignoreList[c.id] = true;
+          if (ignored){
+            delete STATE.ignoreList[c.id];
+            await setIgnored(USER.uid, c.id, false);
+          } else {
+            STATE.ignoreList[c.id] = true;
+            await setIgnored(USER.uid, c.id, true);
+          }
           STATE.meta.lastActivity = "تم تحديث قائمة التجاهل.";
-          await saveUserState(USER.uid, STATE);
+          await saveMeta(USER.uid, { meta: STATE.meta });
           closeModal();
         }),
         makeBtn(`<span class="material-icons">close</span> إغلاق`, "btn", closeModal)
@@ -436,7 +454,7 @@ function showView(name){
 }
 
 /* =========================
-   Add flow (cloud)
+   Add flow
    ========================= */
 function clearAddInputs(){
   qs("#inFront").value="";
@@ -464,15 +482,22 @@ async function deleteTodayProgressAndExit(){
   const today = getTodayKey();
   const g = STATE.groups[today];
   if (g){
-    g.cardIds.forEach(id=>{
+    const ids = g.cardIds.slice();
+    ids.forEach(id=>{
       delete STATE.cards[id];
       delete STATE.ignoreList[id];
     });
     g.cardIds = [];
+
+    await deleteCardsBatch(USER.uid, ids);
+    await setIgnoredBatch(USER.uid, ids, false);
+    await saveGroup(USER.uid, g);
   }
+
   STATE.meta.addLockDateKey = null;
   STATE.meta.lastActivity = "تم حذف إضافة اليوم غير المكتملة.";
-  await saveUserState(USER.uid, STATE);
+  await saveMeta(USER.uid, { meta: STATE.meta });
+
   closeModal();
   showView("home");
 }
@@ -515,7 +540,7 @@ async function saveNewCard(){
     return;
   }
 
-  const g = getOrCreateTodayGroup();
+  const { group:g, created } = getOrCreateTodayGroup();
   const id = uuid();
   const today = getTodayKey();
 
@@ -545,22 +570,28 @@ async function saveNewCard(){
   if (g.cardIds.length >= MIN_DAILY_FIRST) STATE.meta.addLockDateKey = null;
 
   STATE.meta.lastActivity = `تمت إضافة بطاقة جديدة إلى مجموعة ${g.name}.`;
-  await saveUserState(USER.uid, STATE);
+
+  // persist split
+  await saveCard(USER.uid, card);
+  if (created) await saveGroup(USER.uid, g);
+  else await saveGroup(USER.uid, g);
+
+  await saveMeta(USER.uid, { meta: STATE.meta, inventory: STATE.inventory });
 
   clearAddInputs();
   AudioFX.beep("ok");
 }
 
 /* =========================
-   Overdue modal (mandatory)
+   Overdue modal (blocking + optional callback)
    ========================= */
-function checkOverdueModal(){
+function checkOverdueModal(onResolved=null){
   const today = getTodayKey();
   const dueGroups = dueGroupsToday();
-  if (dueGroups.length === 0) return;
+  if (dueGroups.length === 0) return false;
 
-  if (STATE.meta.resolvedOverdueDateKey === today) return;
-  if (STATE.meta.lastAttendanceDateKey === today) return;
+  if (STATE.meta.resolvedOverdueDateKey === today) return false;
+  if (STATE.meta.lastAttendanceDateKey === today) return false;
 
   const decisions = {};
   let body = `<div class="muted" style="margin-bottom:10px">لديك مجموعات يومية مستحقة. اختر إجراءً لكل مجموعة ثم اضغط "حسنًا".</div>`;
@@ -595,6 +626,10 @@ function checkOverdueModal(){
     const missing = dueGroups.filter(g=>!decisions[g.id]);
     if (missing.length){ AudioFX.beep("bad"); return; }
 
+    const cardsToSave = [];
+    const ignoreToSet = [];
+    const ignoreToUnset = []; // not used now but ready
+
     dueGroups.forEach(g=>{
       const d = decisions[g.id];
       if (d === "reset"){
@@ -603,23 +638,36 @@ function checkOverdueModal(){
           if (c){
             c.level = 0;
             c.frozenDue = false;
+            cardsToSave.push(c);
           }
         });
       } else if (d === "ignore"){
-        g.cardIds.forEach(id=>STATE.ignoreList[id]=true);
+        g.cardIds.forEach(id=>{
+          STATE.ignoreList[id] = true;
+          ignoreToSet.push(id);
+        });
       } else {
-        // review: فقط فك التجميد ليقدر يكمل
+        // review: فقط فك التجميد
         g.cardIds.forEach(id=>{
           const c = STATE.cards[id];
-          if (c) c.frozenDue = false;
+          if (c && c.frozenDue){
+            c.frozenDue = false;
+            cardsToSave.push(c);
+          }
         });
       }
     });
 
+    if (cardsToSave.length) await saveCardsBatch(USER.uid, cardsToSave);
+    if (ignoreToSet.length) await setIgnoredBatch(USER.uid, ignoreToSet, true);
+    if (ignoreToUnset.length) await setIgnoredBatch(USER.uid, ignoreToUnset, false);
+
     STATE.meta.resolvedOverdueDateKey = today;
     STATE.meta.lastActivity = "تم تحديد إجراء للمجموعات المستحقة.";
-    await saveUserState(USER.uid, STATE);
+    await saveMeta(USER.uid, { meta: STATE.meta });
+
     closeModal();
+    if (typeof onResolved === "function") onResolved();
   });
 
   openModal("مجموعات مستحقة", body, [btnAllReview, btnAllReset, btnAllIgnore, ok], {closable:false});
@@ -643,6 +691,8 @@ function checkOverdueModal(){
       if (btn) btn.classList.add("on");
     });
   }
+
+  return true;
 }
 
 /* =========================
@@ -660,53 +710,10 @@ function shuffle(arr){
 }
 function buildLessonCards(){ return dueCardsToday(); }
 
-function startLesson(){
-  const cards = buildLessonCards();
-  if (cards.length === 0){
-    AudioFX.beep("bad");
-    openModal("تنبيه", `لم تقم بإضافة بطاقات لعب لهذا اليوم، قم بإضافة بطاقات جديدة وعد غدًا`, [
-      makeBtn("موافق","btn btn--primary", closeModal)
-    ]);
-    return;
-  }
-
-  const gameQueue = shuffle(["matching","flip","scrambled","typing"]);
-  const dueIds = cards.map(c=>c.id);
-  const thirty = Math.max(1, Math.round(dueIds.length * 0.30));
-  const pick1 = shuffle(dueIds).slice(0, thirty);
-  const remain = dueIds.filter(id=>!pick1.includes(id));
-  const pick2 = shuffle(remain).slice(0, Math.min(thirty, remain.length));
-
-  PLAY = {
-    timer:null, sec:0,
-    goldDelta:0, xpDelta:0, ratingDelta:0,
-    usedHelpInGame:false,
-    cards,
-    gameQueue,
-    playedGames:[],
-    inHint:false,
-    scrambledIds: pick1,
-    typingIds: pick2,
-    hintIndex:0,
-    completedHintAll:false,
-    helpLogs:{matching:[], flip:[], scrambled:[], typing:[]},
-    currentGame:null
-  };
-
-  showView("game");
-  qs("#btnNextGame").style.display="";
-  qs("#btnGoHint").style.display="";
-  qs("#btnUseSkip").style.display="";
-  qs("#btnUseHelp").style.display="";
-  qs("#btnHelpLog").style.display="";
-
-  updateHUD();
-  startTimer();
-  launchNextGame();
-}
-
+/* ---------------- Timer (per game) ---------------- */
 function startTimer(){
   stopTimer();
+  if (!PLAY) return;
   PLAY.sec=0;
   qs("#hudTime").textContent="0.0s";
   PLAY.timer=setInterval(()=>{
@@ -718,6 +725,7 @@ function stopTimer(){
   if (PLAY?.timer) clearInterval(PLAY.timer);
   if (PLAY) PLAY.timer=null;
 }
+
 function updateHUD(){
   qs("#hudGold").textContent = (PLAY.goldDelta>=0?"+":"") + PLAY.goldDelta;
   qs("#hudXP").textContent   = (PLAY.xpDelta>=0?"+":"") + PLAY.xpDelta;
@@ -764,6 +772,51 @@ function consumeHelpOrAskBuy(){
   return true;
 }
 
+function startLesson(){
+  const cards = buildLessonCards();
+  if (cards.length === 0){
+    AudioFX.beep("bad");
+    openModal("تنبيه", `لم تقم بإضافة بطاقات لعب لهذا اليوم، قم بإضافة بطاقات جديدة وعد غدًا`, [
+      makeBtn("موافق","btn btn--primary", closeModal)
+    ]);
+    return;
+  }
+
+  const gameQueue = shuffle(["matching","flip","scrambled","typing"]);
+  const dueIds = cards.map(c=>c.id);
+  const thirty = Math.max(1, Math.round(dueIds.length * 0.30));
+  const pick1 = shuffle(dueIds).slice(0, thirty);
+  const remain = dueIds.filter(id=>!pick1.includes(id));
+  const pick2 = shuffle(remain).slice(0, Math.min(thirty, remain.length));
+
+  PLAY = {
+    timer:null, sec:0,
+    goldDelta:0, xpDelta:0, ratingDelta:0,
+    usedHelpInGame:false,
+    cards,
+    gameQueue,
+    playedGames:[],
+    inHint:false,
+    scrambledIds: pick1,
+    typingIds: pick2,
+    hintIndex:0,
+    completedHintAll:false,
+    helpLogs:{matching:[], flip:[], scrambled:[], typing:[]},
+    currentGame:null,
+    hintEdits:{} // applied only after finish
+  };
+
+  showView("game");
+  qs("#btnNextGame").style.display="";
+  qs("#btnGoHint").style.display="";
+  qs("#btnUseSkip").style.display="";
+  qs("#btnUseHelp").style.display="";
+  qs("#btnHelpLog").style.display="";
+
+  updateHUD();
+  launchNextGame();
+}
+
 function launchNextGame(){
   PLAY.usedHelpInGame=false;
   const next = PLAY.gameQueue.find(g=>!PLAY.playedGames.includes(g));
@@ -794,6 +847,8 @@ function gameSubtitle(k){
 }
 
 function renderGame(gameKey){
+  stopTimer();
+
   PLAY.currentGame = gameKey;
   qs("#gameArea").innerHTML="";
   qs("#gameTitle").textContent = gameTitle(gameKey);
@@ -812,7 +867,7 @@ function renderGame(gameKey){
       makeBtn("نعم","btn btn--primary", async ()=>{
         closeModal();
         STATE.inventory.skip -= 1;
-        await saveUserState(USER.uid, STATE);
+        await saveMeta(USER.uid, { inventory: STATE.inventory });
         applyPerfectGameRewards();
         PLAY.playedGames.push(gameKey);
         afterGameFinished(gameKey);
@@ -826,7 +881,7 @@ function renderGame(gameKey){
 
     STATE.inventory.help -= 1;
     PLAY.usedHelpInGame = true;
-    await saveUserState(USER.uid, STATE);
+    await saveMeta(USER.uid, { inventory: STATE.inventory });
 
     if (gameKey==="matching") matchingHelp();
     if (gameKey==="flip") flipHelp();
@@ -838,6 +893,8 @@ function renderGame(gameKey){
   };
 
   qs("#btnHelpLog").onclick = ()=>showHelpLog(gameKey);
+
+  if (gameKey!=="hint") startTimer();
 
   if (gameKey==="matching") gameMatching();
   if (gameKey==="flip") gameFlip();
@@ -963,6 +1020,8 @@ function matchingClick(t, el){
 }
 
 function finishMatching(){
+  stopTimer();
+
   const C=Math.max(1,MATCH.correct);
   const E=MATCH.errors;
   const ER=E/C;
@@ -1092,6 +1151,8 @@ function flipClick(t, el){
 }
 
 function finishFlip(){
+  stopTimer();
+
   const totalSec=(performance.now()-FLIP.startAt)/1000;
   const avgSec= totalSec/Math.max(1,FLIP.pairs);
   if (avgSec>12){
@@ -1166,7 +1227,6 @@ function renderScrambledCard(){
     lettersEl.appendChild(b);
   });
 
-  // حذف آخر حرف (نقرة) + مسح الكل (ضغط مطول)
   const backBtn = qs("#scrBack");
   let longPressTimer = null;
 
@@ -1201,7 +1261,6 @@ function renderScrambledCard(){
   backBtn.addEventListener("mouseleave", ()=>{
     if (longPressTimer){ clearTimeout(longPressTimer); longPressTimer=null; }
   });
-  // mobile
   backBtn.addEventListener("touchstart", (e)=>{
     e.preventDefault();
     longPressTimer = setTimeout(()=>{ doClearAll(); longPressTimer=null; }, 500);
@@ -1244,6 +1303,8 @@ function renderScrambledCard(){
 }
 
 function finishScrambled(){
+  stopTimer();
+
   const C=Math.max(1,SCR.correct);
   const E=SCR.errors;
   const ER=E/C;
@@ -1266,7 +1327,6 @@ function finishScrambled(){
 let TYP=null;
 
 function normalizeTyping(s){
-  // المطلوب: تجاهل الفراغات قبل/بعد + لا فرق بين كبير/صغير
   return String(s ?? "").trim().toLowerCase();
 }
 
@@ -1336,6 +1396,8 @@ function renderTypingCard(){
 }
 
 function finishTyping(){
+  stopTimer();
+
   const C=Math.max(1,TYP.correct);
   const E=TYP.errors;
   const ER=E/C;
@@ -1523,15 +1585,18 @@ function rateHint(cardId, evalText){
   const c = STATE.cards[cardId];
   if (!c) return;
 
-  // فك التجميد لأن المستخدم راجعها
-  c.frozenDue = false;
+  const baseLevel = (PLAY.hintEdits[cardId]?.level ?? c.level);
+  let newLevel = baseLevel;
 
-  if (evalText==="صعب") c.level=0;
-  else if (evalText==="متوسط") c.level = (c.level<=3) ? 0 : 2;
-  // سهل: لا تغيير، يتابع الجدول
+  if (evalText==="صعب") newLevel = 0;
+  else if (evalText==="متوسط") newLevel = (baseLevel<=3) ? 0 : 2;
 
-  c.lastHintEval = evalText;
-  c.lastHintEvalAt = Date.now();
+  PLAY.hintEdits[cardId] = {
+    level: newLevel,
+    frozenDue: false,
+    lastHintEval: evalText,
+    lastHintEvalAt: Date.now()
+  };
 
   PLAY.hintIndex++;
   AudioFX.beep("ok");
@@ -1541,6 +1606,19 @@ function rateHint(cardId, evalText){
 async function finishHintAll(){
   PLAY.completedHintAll=true;
 
+  // apply hint edits now (only now)
+  const changed = [];
+  Object.entries(PLAY.hintEdits).forEach(([id, e])=>{
+    const c = STATE.cards[id];
+    if (!c) return;
+    c.level = e.level;
+    c.frozenDue = false;
+    c.lastHintEval = e.lastHintEval;
+    c.lastHintEvalAt = e.lastHintEvalAt;
+    changed.push(c);
+  });
+
+  // commit rewards
   STATE.wallet.gold += PLAY.goldDelta;
   STATE.wallet.xp   += PLAY.xpDelta;
   applyRatingDelta(PLAY.ratingDelta);
@@ -1552,12 +1630,21 @@ async function finishHintAll(){
 
   STATE.meta.lastActivity = `تم تسجيل حضور اليوم. ربح: ذهب ${PLAY.goldDelta}, XP ${PLAY.xpDelta}, تقييم ${PLAY.ratingDelta}.`;
 
-  // عند الحضور: فك تجميد أي بطاقات وصلت due سابقًا (لأنه حضر اليوم)
+  // unfreeze only frozen cards (reduce writes)
   Object.values(STATE.cards||{}).forEach(c=>{
-    if (c) c.frozenDue = false;
+    if (c && c.frozenDue){
+      c.frozenDue = false;
+      changed.push(c);
+    }
   });
 
-  await saveUserState(USER.uid, STATE);
+  // persist split
+  if (changed.length) await saveCardsBatch(USER.uid, changed);
+  await saveMeta(USER.uid, {
+    wallet: STATE.wallet,
+    rank: STATE.rank,
+    meta: STATE.meta
+  });
 
   AudioFX.beep("coin");
   AudioFX.beep("rank");
@@ -1584,6 +1671,7 @@ async function finishHintAll(){
 function cancelLesson(){
   if (!PLAY) return;
   PLAY.goldDelta=0; PLAY.xpDelta=0; PLAY.ratingDelta=0;
+  PLAY.hintEdits = {};
 }
 function endPlay(goHome=false){
   stopTimer();
@@ -1595,13 +1683,13 @@ async function handleAbortLesson(){
   if (PLAY && !PLAY.completedHintAll){
     cancelLesson();
     STATE.meta.lastActivity = "تم إلغاء الدرس لعدم إكمال تقييم البطاقات.";
-    await saveUserState(USER.uid, STATE);
+    await saveMeta(USER.uid, { meta: STATE.meta });
   }
   endPlay(true);
 }
 
 /* =========================
-   Store (cloud)
+   Store
    ========================= */
 async function buyExtraCard(){
   if ((STATE.inventory.extraCardsBought||0) >= 2){
@@ -1621,7 +1709,7 @@ async function buyExtraCard(){
   STATE.wallet.gold -= 100;
   STATE.inventory.extraCardsBought = (STATE.inventory.extraCardsBought||0) + 1;
   STATE.meta.lastActivity = "تم شراء بطاقة إضافية لليوم.";
-  await saveUserState(USER.uid, STATE);
+  await saveMeta(USER.uid, { wallet: STATE.wallet, inventory: STATE.inventory, meta: STATE.meta });
   AudioFX.beep("coin");
 }
 async function buySkip(){
@@ -1635,7 +1723,7 @@ async function buySkip(){
   STATE.wallet.gold -= 900;
   STATE.inventory.skip = (STATE.inventory.skip||0) + 1;
   STATE.meta.lastActivity = "تم شراء تخطي.";
-  await saveUserState(USER.uid, STATE);
+  await saveMeta(USER.uid, { wallet: STATE.wallet, inventory: STATE.inventory, meta: STATE.meta });
   AudioFX.beep("coin");
 }
 async function buyHelp(){
@@ -1649,7 +1737,7 @@ async function buyHelp(){
   STATE.wallet.gold -= 150;
   STATE.inventory.help = (STATE.inventory.help||0) + 1;
   STATE.meta.lastActivity = "تم شراء مساعدة.";
-  await saveUserState(USER.uid, STATE);
+  await saveMeta(USER.uid, { wallet: STATE.wallet, inventory: STATE.inventory, meta: STATE.meta });
   AudioFX.beep("coin");
 }
 async function buyFuel(){
@@ -1663,12 +1751,12 @@ async function buyFuel(){
   STATE.wallet.gold -= 250;
   STATE.inventory.fuel = (STATE.inventory.fuel||0) + 1;
   STATE.meta.lastActivity = "تم شراء وقود.";
-  await saveUserState(USER.uid, STATE);
+  await saveMeta(USER.uid, { wallet: STATE.wallet, inventory: STATE.inventory, meta: STATE.meta });
   AudioFX.beep("coin");
 }
 
 /* =========================
-   Start play
+   Start play (fixed overdue logic)
    ========================= */
 function handleStartPlay(){
   const cards = buildLessonCards();
@@ -1679,12 +1767,16 @@ function handleStartPlay(){
     ]);
     return;
   }
-  checkOverdueModal();
+
+  // if overdue modal needed: block and then start after resolved
+  const opened = checkOverdueModal(()=>startLesson());
+  if (opened) return;
+
   startLesson();
 }
 
 /* =========================
-   Export/Import (cloud)
+   Export/Import
    ========================= */
 function exportJSON(){
   const data = JSON.stringify(STATE, null, 2);
@@ -1703,9 +1795,10 @@ async function importJSON(file){
     try{
       const obj = JSON.parse(reader.result);
       if (!obj.wallet || !obj.cards || !obj.groups) throw new Error("invalid");
-      // استيراد كامل (يستبدل)
-      STATE = obj;
-      await saveUserState(USER.uid, STATE);
+
+      // replace (split-safe)
+      await saveUserState(USER.uid, obj, { mode:"replace" });
+
       AudioFX.beep("ok");
       openModal("تم", "تم الاستيراد بنجاح.", [
         makeBtn("إغلاق","btn btn--primary", closeModal)
@@ -1721,7 +1814,7 @@ async function importJSON(file){
 }
 
 /* =========================
-   Account modal (logout + delete)
+   Account modal
    ========================= */
 function openAccountModal(){
   openModal("الحساب", `
@@ -1730,7 +1823,7 @@ function openAccountModal(){
       <div class="muted" style="margin-top:6px">${escapeHTML(USER.email || "")}</div>
       <div class="divider"></div>
       <div class="muted">يمكنك تسجيل الخروج أو حذف الحساب نهائيًا.</div>
-      <div class="muted tiny">حذف الحساب يؤدي إلى حذف جميع بياناتك من السيرفر.</div>
+      <div class="muted tiny">حذف الحساب يؤدي إلى حذف بياناتك من السيرفر (ملاحظة: Firestore لا يحذف subcollections تلقائيًا).</div>
     </div>
   `, [
     makeBtn(`<span class="material-icons">logout</span> تسجيل الخروج`, "btn btn--primary", async ()=>{
@@ -1759,7 +1852,6 @@ function confirmDeleteAccountStep2(){
       try{
         await doDeleteAccountHard(auth.currentUser);
       }catch(e){
-        // غالبًا يحتاج re-auth
         openModal("يتطلب إعادة تسجيل", `
           <div class="muted">لا يمكن حذف الحساب الآن بسبب حماية الأمان. أدخل كلمة المرور لإعادة التحقق (لحسابات البريد فقط).</div>
           <div class="formGrid one" style="margin-top:12px">
@@ -1848,7 +1940,6 @@ function wireUI(){
 
   qs("#userBtn").onclick=()=>{ AudioFX.beep("tap"); openAccountModal(); };
 
-  // حماية: إذا أغلق الصفحة أثناء الدرس قبل التلميح -> إلغاء المكافآت
   window.addEventListener("beforeunload", ()=>{
     if (PLAY && !PLAY.completedHintAll){
       cancelLesson();
@@ -1857,8 +1948,10 @@ function wireUI(){
 }
 
 /* =========================
-   Cloud sync start
+   Cloud sync start (NO infinite loop)
    ========================= */
+let UI_WIRED = false;
+
 async function startApp(user){
   USER = user;
   await ensureUserDoc(user);
@@ -1867,29 +1960,44 @@ async function startApp(user){
   UNSUB = watchUserState(user.uid, async (st)=>{
     STATE = st;
 
-    // ضمان الاسم في state.profile
+    // ensure profile
     STATE.profile = STATE.profile || {};
     STATE.profile.displayName = STATE.profile.displayName || user.displayName || null;
     STATE.profile.email = STATE.profile.email || user.email || null;
 
-    // إصلاح منتصف الليل + الغياب
-    advanceCardsUpToToday();
+    // ensure today group exists locally
+    const { group:tg, created } = getOrCreateTodayGroup();
+    if (created){
+      // create group doc once (no loop)
+      await saveGroup(USER.uid, tg);
+    }
 
-    // ضمان مجموعة اليوم
-    getOrCreateTodayGroup();
-
-    // حفظ أي تغييرات حصلت بسبب تقدم الأيام فورًا للسحابة
-    await saveUserState(USER.uid, STATE);
+    // midnight/absence progression - only save if changes happened
+    const prog = advanceCardsUpToToday();
+    if (prog.metaChanged){
+      await saveMeta(USER.uid, {
+        meta: STATE.meta,
+        wallet: STATE.wallet,
+        inventory: STATE.inventory
+      });
+    }
+    if (prog.changedCards?.length){
+      await saveCardsBatch(USER.uid, prog.changedCards);
+    }
 
     refreshHUD();
     refreshTodayList();
     refreshCardsList(qs("#cardsSearch")?.value || "");
 
-    // إظهار نافذة المتأخرات
+    // overdue popup (non-start)
     checkOverdueModal();
   });
 
-  wireUI();
+  if (!UI_WIRED){
+    wireUI();
+    UI_WIRED = true;
+  }
+
   showView("home");
 }
 
