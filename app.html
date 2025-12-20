@@ -1,4 +1,4 @@
-<!-- app.html -->
+<!-- app.html (MAIN APP) -->
 <!doctype html>
 <html lang="ar" dir="rtl">
 <head>
@@ -11,7 +11,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;600;800&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
-
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -29,9 +28,9 @@
       </div>
 
       <div class="hud__right">
-        <button class="pill pill--btn" id="userPill" title="إعدادات الحساب">
-          <span class="material-icons">person</span>
-          <span id="userLabel">—</span>
+        <button class="pill pill--btn" id="btnUserMenu" type="button" title="الحساب">
+          <span class="material-icons">account_circle</span>
+          <span id="userNameLabel">—</span>
         </button>
 
         <div class="pill">
@@ -77,7 +76,7 @@
           <div class="hero__left">
             <h1>تعلّم مثل لعبة</h1>
             <p class="muted">
-              العب 4 ألعاب عشوائية ثم قيّم في (التلميح) لتسجيل الحضور.
+              العب 4 ألعاب عشوائية ثم قيّم في لعبة التلميح لتسجيل الحضور.
               <br/>المكافآت تُعتمد فقط بعد إنهاء التلميح.
             </p>
 
@@ -117,7 +116,7 @@
               </div>
 
               <div class="miniCard">
-                <div class="miniCard__title">عناصر</div>
+                <div class="miniCard__title">العناصر</div>
                 <div class="itemsRow">
                   <span class="chip" id="chipSkip">تخطي: 0</span>
                   <span class="chip" id="chipHelp">مساعدة: 0</span>
@@ -133,9 +132,9 @@
               <div class="glass__title">قواعد سريعة</div>
               <ul class="rules">
                 <li>لا حضور بدون إنهاء <b>التلميح</b> بالكامل.</li>
-                <li>إذا أغلقت قبل التلميح: تُلغى مكافآت الألعاب الأربع.</li>
+                <li>إذا سكّرت قبل التلميح: تُلغى مكافآت الألعاب الأربع.</li>
                 <li>إضافة اليوم: <b>4</b> بطاقات إلزامي لأول مرة، أقصى <b>10</b> + بطاقتين مشتريات.</li>
-                <li>أول مرة تفتح التطبيق: معك <b>900</b> ذهب.</li>
+                <li>أول مرة: معك <b>900</b> ذهب.</li>
               </ul>
             </div>
           </div>
@@ -174,7 +173,7 @@
                 تلميح
                 <button class="qBtn" type="button" data-help="hintHelp">?</button>
               </label>
-              <input id="inHint" maxlength="60" placeholder="مثال: 🍎 أو (فاكهة)" />
+              <input id="inHint" maxlength="60" placeholder="مثال: (فاكهة) أو رمز" />
               <div class="field__sub">حتى 60 حرف</div>
             </div>
           </div>
@@ -336,7 +335,6 @@
           </div>
 
           <div class="divider"></div>
-
           <div id="gameArea" class="gameArea"></div>
 
           <div class="divider"></div>
@@ -351,14 +349,13 @@
           </div>
 
           <div class="muted tiny" id="pendingNote">
-            مكافآت اليوم “معلّقة” ولن تُعتمد إلا بعد إنهاء التلميح بالكامل.
+            مكافآت اليوم معلّقة ولن تُعتمد إلا بعد إنهاء التلميح بالكامل.
           </div>
         </div>
       </section>
     </main>
   </div>
 
-  <!-- Modals -->
   <div class="modalHost" id="modalHost"></div>
 
   <script type="module" src="app.js"></script>
