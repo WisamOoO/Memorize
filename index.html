@@ -1,50 +1,81 @@
-<!-- index.html -->
+<!-- index.html (LOGIN) -->
 <!doctype html>
 <html lang="ar" dir="rtl">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#070A12" />
-  <title>Memorize Game</title>
+  <title>Memorize Game - تسجيل الدخول</title>
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;600;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div class="centerGate">
-    <div class="panel gatePanel">
-      <div class="brand brand--center">
-        <div class="brand__logo">MG</div>
-        <div class="brand__text">
-          <div class="brand__name">Memorize Game</div>
-          <div class="brand__sub">جاري التحقق من الحساب...</div>
+  <div id="app">
+    <header class="hud">
+      <div class="hud__left">
+        <div class="brand">
+          <div class="brand__logo">MG</div>
+          <div class="brand__text">
+            <div class="brand__name">Memorize Game</div>
+            <div class="brand__sub">تسجيل الدخول</div>
+          </div>
         </div>
       </div>
-      <div class="divider"></div>
-      <div class="muted">
-        إذا لم يتم تحويلك خلال ثوانٍ، افتح صفحة تسجيل الدخول.
-      </div>
-      <div style="margin-top:14px">
-        <a class="btn btn--primary" href="login.html">تسجيل الدخول</a>
-      </div>
-    </div>
+      <div class="hud__right"></div>
+    </header>
+
+    <main class="views" style="padding-top:0">
+      <section class="view active">
+        <div class="panel" style="max-width:720px;margin:0 auto;">
+          <div class="panel__head">
+            <h2>تسجيل الدخول</h2>
+            <div class="muted">لا يمكن استخدام البرنامج بدون حساب</div>
+          </div>
+
+          <div class="formGrid" style="grid-template-columns:1fr;">
+            <div class="field">
+              <label>البريد الإلكتروني</label>
+              <input id="loginEmail" type="email" autocomplete="email" placeholder="name@example.com" />
+            </div>
+
+            <div class="field">
+              <label>كلمة المرور</label>
+              <input id="loginPass" type="password" autocomplete="current-password" placeholder="••••••••" />
+            </div>
+          </div>
+
+          <div class="rowActions" style="margin-top:14px">
+            <button class="btn btn--primary" id="btnLogin">
+              <span class="material-icons">login</span> دخول
+            </button>
+            <button class="btn" id="btnGoSignup">
+              <span class="material-icons">person_add</span> إنشاء حساب
+            </button>
+            <button class="btn btn--ghost" id="btnGoReset">
+              <span class="material-icons">help</span> نسيت كلمة المرور
+            </button>
+          </div>
+
+          <div class="divider"></div>
+
+          <div class="rowActions">
+            <button class="btn btn--primary" id="btnGoogle">
+              <span class="material-icons">g_mobiledata</span> دخول عبر Google
+            </button>
+          </div>
+
+          <div class="muted tiny" id="loginMsg" style="margin-top:12px">—</div>
+        </div>
+      </section>
+    </main>
   </div>
 
-  <script type="module">
-    import { auth, onAuthStateChanged } from "./firebase.js";
+  <div class="modalHost" id="modalHost"></div>
 
-    onAuthStateChanged(auth, (user) => {
-      if (!user) {
-        window.location.replace("login.html");
-        return;
-      }
-      if (!user.emailVerified) {
-        window.location.replace("verify.html");
-        return;
-      }
-      window.location.replace("app.html");
-    });
-  </script>
+  <script type="module" src="auth.js"></script>
 </body>
 </html>
