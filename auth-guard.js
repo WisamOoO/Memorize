@@ -9,8 +9,9 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 
 import {
-  doc, getDoc, setDoc, deleteDoc, serverTimestamp, onSnapshot,
-  collection, getDocs, writeBatch
+  doc, getDoc, setDoc, deleteDoc,
+  serverTimestamp, onSnapshot,
+  collection
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 /* ---------------- Helpers ---------------- */
@@ -95,7 +96,7 @@ export function accountLevelFromXP(xp){
   return {level:lvl, curMinXP, nextMinXP, toNext: Math.max(0,nextMinXP-xp)};
 }
 
-/* ---------------- Default State (Base doc only) ---------------- */
+/* ---------------- Default Base State (small) ---------------- */
 export function defaultBaseState(){
   const today = nowISODateKey();
   return {
@@ -122,20 +123,30 @@ export function defaultBaseState(){
   };
 }
 
-/* ---------------- Refs ---------------- */
-export function userDocRef(uid){ return doc(db, "users", uid); }
-export function cardsColRef(uid){ return collection(db, "users", uid, "cards"); }
-export function groupsColRef(uid){ return collection(db, "users", uid, "groups"); }
-export function ignoreColRef(uid){ return collection(db, "users", uid, "ignore"); }
+/* ---------------- Firestore Refs ---------------- */
+export function userDocRef(uid){
+  return doc(db, "users", uid);
+}
+export function userCardsColRef(uid){
+  return collection(db, "users", uid, "cards");
+}
+export function userGroupsColRef(uid){
+  return collection(db, "users", uid, "groups");
+}
+export function userCardRef(uid, cardId){
+  return doc(db, "users", uid, "cards", cardId);
+}
+export function userGroupRef(uid, groupId){
+  return doc(db, "users", uid, "groups", groupId);
+}
 
-export function cardDocRef(uid, cardId){ return doc(db, "users", uid, "cards", cardId); }
-export function groupDocRef(uid, groupId){ return doc(db, "users", uid, "groups", groupId); }
-export function ignoreDocRef(uid, cardId){ return doc(db, "users", uid, "ignore", cardId); }
-
-/* ---------------- Ensure user doc ---------------- */
+/* ---------------- Ensure user docs ---------------- */
 export async function ensureUserDoc(user){
   const ref = userDocRef(user.uid);
   const snap = await getDoc(ref);
+
+  const today = nowISODateKey();
+
   if (!snap.exists()){
     const base = defaultBaseState();
     base.profile.displayName = user.displayName || null;
@@ -147,90 +158,105 @@ export async function ensureUserDoc(user){
       updatedAt: serverTimestamp()
     }, { merge: true });
 
-    // create today group doc
-    const today = nowISODateKey();
-    await setDoc(groupDocRef(user.uid, today), {
-      id: today, name: formatGroupName(today), dateKey: today, cardIds: []
+    // ensure today's group doc
+    const gRef = userGroupRef(user.uid, today);
+    await setDoc(gRef, {
+      id: today,
+      name: formatGroupName(today),
+      dateKey: today,
+      cardIds: []
     }, { merge: true });
 
-  } else {
-    const data = snap.data() || {};
-    if (!data.base){
-      const base = defaultBaseState();
-      base.profile.displayName = user.displayName || null;
-      base.profile.email = user.email || null;
-      await setDoc(ref, { base, updatedAt: serverTimestamp() }, { merge: true });
-    }
+    return;
   }
+
+  // Ensure base exists
+  const data = snap.data() || {};
+  if (!data.base){
+    const base = defaultBaseState();
+    base.profile.displayName = user.displayName || null;
+    base.profile.email = user.email || null;
+    await setDoc(ref, { base, updatedAt: serverTimestamp() }, { merge: true });
+  }
+
+  // Ensure today's group doc exists (merge)
+  const gRef = userGroupRef(user.uid, today);
+  await setDoc(gRef, {
+    id: today,
+    name: formatGroupName(today),
+    dateKey: today,
+    cardIds: []
+  }, { merge: true });
 }
 
-/* ---------------- Load full state (base + subcollections) ---------------- */
-export async function loadFullState(uid){
-  const baseSnap = await getDoc(userDocRef(uid));
-  const base = (baseSnap.data()?.base) || defaultBaseState();
-
-  const [cardsSnap, groupsSnap, ignoreSnap] = await Promise.all([
-    getDocs(cardsColRef(uid)),
-    getDocs(groupsColRef(uid)),
-    getDocs(ignoreColRef(uid))
-  ]);
-
-  const cards = {};
-  cardsSnap.forEach(d=>{
-    const v = d.data();
-    if (v?.id) cards[v.id] = v;
-  });
-
-  const groups = {};
-  groupsSnap.forEach(d=>{
-    const v = d.data();
-    if (v?.id) groups[v.id] = v;
-  });
-
-  const ignoreList = {};
-  ignoreSnap.forEach(d=>{
-    ignoreList[d.id] = true;
-  });
-
-  return {
-    ...base,
-    cards,
-    groups,
-    ignoreList
-  };
-}
-
-/* ---------------- Watch base only (prevents infinite loops) ---------------- */
-export function watchBase(uid, onBase){
-  return onSnapshot(userDocRef(uid), (snap)=>{
-    const data = snap.data();
-    if (data?.base) onBase(data.base);
-  });
-}
-
-/* ---------------- Save operations ---------------- */
-export async function saveBase(uid, base){
-  await setDoc(userDocRef(uid), { base, updatedAt: serverTimestamp() }, { merge: true });
+/* ---------------- Save ops (granular) ---------------- */
+export async function saveUserBaseState(uid, base){
+  const ref = userDocRef(uid);
+  await setDoc(ref, { base, updatedAt: serverTimestamp() }, { merge: true });
 }
 export async function saveCard(uid, card){
-  await setDoc(cardDocRef(uid, card.id), card, { merge: true });
-}
-export async function deleteCard(uid, cardId){
-  await deleteDoc(cardDocRef(uid, cardId));
+  const ref = userCardRef(uid, card.id);
+  const payload = { ...card };
+  delete payload.id;
+  await setDoc(ref, payload, { merge: true });
 }
 export async function saveGroup(uid, group){
-  await setDoc(groupDocRef(uid, group.id), group, { merge: true });
+  const ref = userGroupRef(uid, group.id);
+  const payload = { ...group };
+  delete payload.id;
+  await setDoc(ref, payload, { merge: true });
 }
-export async function setIgnored(uid, cardId, val){
-  if (val) await setDoc(ignoreDocRef(uid, cardId), { ignored:true, at: Date.now() }, { merge:true });
-  else await deleteDoc(ignoreDocRef(uid, cardId)).catch(()=>{});
+export async function deleteCard(uid, cardId){
+  await deleteDoc(userCardRef(uid, cardId)).catch(()=>{});
 }
 
-/* batch helpers */
-export async function batchWrite(uid, opsFn){
-  const b = writeBatch(db);
-  opsFn(b);
-  await b.commit();
+/* ---------------- Watch aggregated state ---------------- */
+export function watchUserState(uid, onState){
+  let base = null;
+  let cards = {};
+  let groups = {};
+
+  let baseReady = false;
+  let cardsReady = false;
+  let groupsReady = false;
+
+  const emit = ()=>{
+    if (!baseReady || !cardsReady || !groupsReady) return;
+    onState({
+      ...base,
+      cards,
+      groups
+    });
+  };
+
+  const unsubBase = onSnapshot(userDocRef(uid), (snap)=>{
+    const data = snap.data() || {};
+    base = data.base || defaultBaseState();
+    baseReady = true;
+    emit();
+  });
+
+  const unsubCards = onSnapshot(userCardsColRef(uid), (qsnap)=>{
+    const map = {};
+    qsnap.forEach(d=>{
+      map[d.id] = { id: d.id, ...d.data() };
+    });
+    cards = map;
+    cardsReady = true;
+    emit();
+  });
+
+  const unsubGroups = onSnapshot(userGroupsColRef(uid), (qsnap)=>{
+    const map = {};
+    qsnap.forEach(d=>{
+      map[d.id] = { id: d.id, ...d.data() };
+    });
+    groups = map;
+    groupsReady = true;
+    emit();
+  });
+
+  return ()=>{ unsubBase(); unsubCards(); unsubGroups(); };
 }
 
 /* ---------------- Auth Gates ---------------- */
@@ -247,12 +273,16 @@ export function redirect(path){
 export function guardIndex(){
   onAuthStateChanged(auth, async (user)=>{
     if (!user) return redirect("./login.html");
+
     if (isPasswordUser(user) && !user.emailVerified) return redirect("./verify.html");
     if (needsName(user)) return redirect("./google-name.html");
-    await ensureUserDoc(user);
+
+    // مهم: لا تنتظر Firestore هنا حتى لا تتعلق صفحة التحقق
+    ensureUserDoc(user).catch(()=>{});
     redirect("./app.html");
   });
 }
+
 export function guardLoginLike(){
   onAuthStateChanged(auth, (user)=>{
     if (!user) return;
@@ -261,11 +291,13 @@ export function guardLoginLike(){
     redirect("./app.html");
   });
 }
+
 export function guardVerifyPage(){
   onAuthStateChanged(auth, (user)=>{
     if (!user) return;
   });
 }
+
 export function guardGoogleNamePage(){
   onAuthStateChanged(auth, (user)=>{
     if (!user) return redirect("./login.html");
@@ -273,12 +305,13 @@ export function guardGoogleNamePage(){
     if (!needsName(user)) return redirect("./app.html");
   });
 }
+
 export function guardApp(onUser){
   onAuthStateChanged(auth, async (user)=>{
     if (!user) return redirect("./login.html");
     if (isPasswordUser(user) && !user.emailVerified) return redirect("./verify.html");
     if (needsName(user)) return redirect("./google-name.html");
-    await ensureUserDoc(user);
+    await ensureUserDoc(user).catch(()=>{});
     onUser(user);
   });
 }
@@ -288,12 +321,13 @@ export async function doLogout(){
   await signOut(auth);
   redirect("./login.html");
 }
+
 export async function doDeleteAccountHard(user){
-  // NOTE: deleting subcollections is not handled here (needs Cloud Function). Keep as-is for now.
   const ref = userDocRef(user.uid);
   await deleteDoc(ref).catch(()=>{});
   await deleteUser(user);
 }
+
 export async function reauthWithPassword(user, password){
   const cred = EmailAuthProvider.credential(user.email, password);
   await reauthenticateWithCredential(user, cred);
