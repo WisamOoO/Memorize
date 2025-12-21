@@ -7,39 +7,44 @@ import {
   accountLevelFromXP,
   difficultyD, levelMultiplier, speedFactor,
   targetProgressForRank, tierMaxSub,
-
-  ensureUserDoc,
-  loadFullState,
-  watchBase,
-  saveBase,
-  saveCard,
-  saveGroup,
-  setIgnored,
-  batchWrite,
-
+  ensureUserDoc, watchUserState,
+  saveUserBaseState, saveCard, saveGroup, deleteCard,
   doLogout, doDeleteAccountHard, reauthWithPassword
 } from "./auth-guard.js";
 
 /* =========================
-   State
+   State (Cloud split)
    ========================= */
 let USER = null;
-let STATE = null;
-let UNSUB_BASE = null;
+let STATE = null; // aggregated: {meta,wallet,rank,inventory,profile,cards,groups}
+let UNSUB = null;
 
 const MAX_DAILY_BASE = 10;
 const MIN_DAILY_FIRST = 4;
-
-let DATE_TICKER = null;
-let CURRENT_DAY_KEY = nowISODateKey();
 
 function uuid(){
   return "c_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
 }
 function getTodayKey(){ return nowISODateKey(); }
 
-function allCardsArray(){
-  return Object.values(STATE.cards || {});
+function allCardsArray(){ return Object.values(STATE.cards || {}); }
+
+function getOrCreateTodayGroupLocal(){
+  const today = getTodayKey();
+  if (!STATE.groups[today]){
+    STATE.groups[today] = { id: today, name: formatGroupName(today), dateKey: today, cardIds: [] };
+    return { group: STATE.groups[today], created: true };
+  }
+  return { group: STATE.groups[today], created: false };
+}
+
+function todayCapacity(){
+  const extra = Math.min(2, STATE.inventory.extraCardsBought || 0);
+  return MAX_DAILY_BASE + extra;
+}
+function todayCount(){
+  const g = STATE.groups[getTodayKey()];
+  return g ? (g.cardIds?.length || 0) : 0;
 }
 
 /* =========================
@@ -112,13 +117,11 @@ function openModal(title, bodyHTML, buttons=[], opts={}){
 
   host.onclick = closable ? (e)=>{ if (e.target===host) closeModal(); } : null;
 }
-
 function closeModal(){
   const host = qs("#modalHost");
   host.classList.remove("show");
   host.innerHTML="";
 }
-
 function makeBtn(html, cls="btn", onClick=()=>{}){
   const b=document.createElement("button");
   b.className=cls;
@@ -149,51 +152,42 @@ function burstFX(xPct=50,yPct=50,count=12){
 }
 
 /* =========================
-   Groups / Capacity
+   Chrome visibility (hide nav in game)
    ========================= */
-function getOrCreateTodayGroupLocal(){
-  const today = getTodayKey();
-  if (!STATE.groups[today]){
-    STATE.groups[today] = { id: today, name: formatGroupName(today), dateKey: today, cardIds: [] };
-  }
-  return STATE.groups[today];
-}
-
-function todayCapacity(){
-  const extra = Math.min(2, STATE.inventory.extraCardsBought || 0);
-  return MAX_DAILY_BASE + extra;
-}
-function todayCount(){
-  const g = STATE.groups[getTodayKey()];
-  return g ? (g.cardIds?.length || 0) : 0;
+function setGameChrome(isGame){
+  const nav = qs(".nav");
+  if (nav) nav.style.display = isGame ? "none" : "";
 }
 
 /* =========================
-   Day rollover (NO infinite loop)
+   Daily progression (NO loop)
+   - called once per snapshot
+   - returns dirty info only if changes happened
    ========================= */
-function computeAndApplyDayRollover(){
+function advanceCardsUpToToday(){
   const today = getTodayKey();
   const lastOpen = STATE.meta.lastOpenDateKey || today;
   const delta = daysBetween(lastOpen, today);
-  if (delta <= 0){
-    STATE.meta.lastOpenDateKey = today;
-    return { changed:false, changedCardIds:[] };
-  }
+  if (delta <= 0) return { baseDirty:false, dirtyCardIds:new Set() };
 
-  const changedCardIds = [];
+  let baseDirty = false;
+  const dirtyCardIds = new Set();
 
-  // streak/fuel handling
+  // streak/fuel check (only when days changed)
   const yesterday = addDays(today, -1);
   if (STATE.meta.lastAttendanceDateKey !== yesterday && STATE.meta.lastAttendanceDateKey !== today){
     if ((STATE.inventory.fuel||0) > 0){
       STATE.inventory.fuel -= 1;
       STATE.meta.lastActivity = "تم استخدام 1 وقود لحماية الحماسة.";
+      baseDirty = true;
+      AudioFX.beep("coin");
     } else {
       STATE.meta.streak = 0;
+      baseDirty = true;
     }
   }
 
-  // card progression day-by-day
+  // advance cards day by day
   const cards = Object.values(STATE.cards||{});
   for (const c of cards){
     if (!c) continue;
@@ -203,7 +197,6 @@ function computeAndApplyDayRollover(){
     if (steps <= 0) continue;
 
     let curKey = lastAdv;
-    let anyChange = false;
 
     for (let i=0;i<steps;i++){
       const nextKey = addDays(curKey, 1);
@@ -213,81 +206,40 @@ function computeAndApplyDayRollover(){
         continue;
       }
 
-      if (c.level < 6) { c.level += 1; anyChange = true; }
+      if (c.level < 6) c.level += 1;
 
       const age = daysBetween(c.addDateKey, nextKey);
-      if (age >= 30 && c.level !== 7){
-        c.level = 7; anyChange = true;
-      }
+      if (age >= 30) c.level = 7;
 
       if (DUE_LEVELS.has(c.level) && STATE.meta.lastAttendanceDateKey !== nextKey){
-        if (c.frozenDue !== true) { c.frozenDue = true; anyChange = true; }
+        c.frozenDue = true;
       }
 
       curKey = nextKey;
     }
 
     c.lastAdvanceDateKey = today;
-    if (anyChange) changedCardIds.push(c.id);
+    dirtyCardIds.add(c.id);
   }
 
-  // refund unused extra cards
+  // refund unused extra cards, reset daily inventory
   const unused = Math.max(0, (STATE.inventory.extraCardsBought||0) - (STATE.inventory.extraCardsUsed||0));
   if (unused > 0){
     const refund = Math.floor(unused * 100 * 0.5);
     STATE.wallet.gold += refund;
     STATE.meta.lastActivity = `تمت إعادة ${refund} ذهب (50% من بطاقات إضافية غير مستخدمة).`;
+    baseDirty = true;
+    AudioFX.beep("coin");
   }
 
   STATE.inventory.dateKey = today;
   STATE.inventory.extraCardsBought = 0;
   STATE.inventory.extraCardsUsed = 0;
   STATE.meta.addLockDateKey = null;
-
   STATE.meta.lastOpenDateKey = today;
+  baseDirty = true;
 
-  return { changed:true, changedCardIds };
-}
-
-async function persistDayRolloverIfNeeded(){
-  const { changed, changedCardIds } = computeAndApplyDayRollover();
-  if (!changed) return;
-
-  // ensure today group exists
-  const g = getOrCreateTodayGroupLocal();
-
-  await batchWrite(USER.uid, (b)=>{
-    // base
-    b.set(
-      // user doc
-      (await import("./auth-guard.js")).userDocRef(USER.uid),
-      { base: pickBase(STATE), updatedAt: (await import("./firebase.js")).serverTimestamp?.() },
-      { merge:true }
-    );
-  }).catch(async ()=>{
-    // fallback: simple saves (no batch)
-    await saveBase(USER.uid, pickBase(STATE));
-  });
-
-  // Save today group if created locally
-  await saveGroup(USER.uid, g);
-
-  // Save changed cards only
-  for (const id of changedCardIds){
-    const c = STATE.cards[id];
-    if (c) await saveCard(USER.uid, c);
-  }
-}
-
-/* helper: pick base only */
-function pickBase(full){
-  return {
-    meta: full.meta,
-    wallet: full.wallet,
-    rank: full.rank,
-    inventory: full.inventory,
-    profile: full.profile
-  };
+  return { baseDirty, dirtyCardIds };
 }
 
 /* =========================
@@ -295,7 +247,7 @@ function pickBase(full){
    ========================= */
 function dueCardsToday(){
   return allCardsArray()
-    .filter(c => !STATE.ignoreList?.[c.id])
+    .filter(c => !c.ignored)
     .filter(c => DUE_LEVELS.has(c.level));
 }
 function dueGroupsToday(){
@@ -341,7 +293,7 @@ function applyRatingDelta(delta){
    UI refresh
    ========================= */
 function refreshHUD(){
-  const g = getOrCreateTodayGroupLocal();
+  const { group:g } = getOrCreateTodayGroupLocal();
   qs("#todayLabel").textContent = `مجموعة اليوم: ${g.name}`;
   qs("#goldLabel").textContent = STATE.wallet.gold;
 
@@ -380,11 +332,11 @@ function refreshHUD(){
 }
 
 function refreshTodayList(){
-  const g = getOrCreateTodayGroupLocal();
+  const { group:g } = getOrCreateTodayGroupLocal();
   const list = qs("#todayList");
   list.innerHTML = "";
 
-  (g.cardIds||[]).slice().reverse().forEach(id=>{
+  (g.cardIds || []).slice().reverse().forEach(id=>{
     const c = STATE.cards[id];
     if (!c) return;
     const el = document.createElement("div");
@@ -430,7 +382,7 @@ function refreshCardsList(filter=""){
   }
 
   cards.forEach(c=>{
-    const ignored = !!STATE.ignoreList?.[c.id];
+    const ignored = !!c.ignored;
     const el = document.createElement("div");
     el.className = "cardTile";
     el.innerHTML = `
@@ -454,26 +406,17 @@ function refreshCardsList(filter=""){
           <div><b>آخر تقييم:</b> ${escapeHTML(c.lastHintEval || "-")}</div>
         </div>
       `, [
-        makeBtn(
-          `<span class="material-icons">visibility_off</span> ${ignored ? "إلغاء التجاهل" : "تجاهل"}`,
-          "btn btn--primary",
-          async ()=>{
-            if (!STATE.ignoreList) STATE.ignoreList = {};
-            if (ignored){
-              delete STATE.ignoreList[c.id];
-              await setIgnored(USER.uid, c.id, false);
-              STATE.meta.lastActivity = "تم إلغاء تجاهل البطاقة.";
-            }else{
-              STATE.ignoreList[c.id] = true;
-              await setIgnored(USER.uid, c.id, true);
-              STATE.meta.lastActivity = "تم تجاهل البطاقة.";
-            }
-            await saveBase(USER.uid, pickBase(STATE));
-            closeModal();
-            refreshCardsList(qs("#cardsSearch")?.value || "");
-            refreshHUD();
-          }
-        ),
+        makeBtn(`<span class="material-icons">visibility_off</span> ${ignored ? "إلغاء التجاهل" : "تجاهل"}`, "btn btn--primary", async ()=>{
+          const cc = STATE.cards[c.id];
+          if (!cc) return;
+          cc.ignored = !cc.ignored;
+          STATE.meta.lastActivity = "تم تحديث حالة التجاهل.";
+          await Promise.all([
+            saveCard(USER.uid, cc),
+            saveUserBaseState(USER.uid, pickBaseState())
+          ]);
+          closeModal();
+        }),
         makeBtn(`<span class="material-icons">close</span> إغلاق`, "btn", closeModal)
       ]);
     };
@@ -482,14 +425,14 @@ function refreshCardsList(filter=""){
 }
 
 /* =========================
-   Views + hide nav in game
+   Views
    ========================= */
 function showView(name){
   qsa(".view").forEach(v=>v.classList.remove("active"));
   qs(`#view-${name}`).classList.add("active");
   qsa(".nav__btn").forEach(b=>b.classList.toggle("active", b.dataset.view === name));
 
-  document.body.classList.toggle("inGame", name === "game");
+  setGameChrome(name==="game");
 
   if (name==="add"){
     clearAddInputs();
@@ -502,6 +445,19 @@ function showView(name){
 }
 
 /* =========================
+   Base state picker (for saving)
+   ========================= */
+function pickBaseState(){
+  return {
+    meta: STATE.meta,
+    wallet: STATE.wallet,
+    rank: STATE.rank,
+    inventory: STATE.inventory,
+    profile: STATE.profile
+  };
+}
+
+/* =========================
    Add flow
    ========================= */
 function clearAddInputs(){
@@ -509,7 +465,6 @@ function clearAddInputs(){
   qs("#inBack").value="";
   qs("#inHint").value="";
 }
-
 function addLockActiveToday(){
   const today = getTodayKey();
   return STATE.meta.addLockDateKey === today && todayCount() < MIN_DAILY_FIRST;
@@ -530,19 +485,17 @@ async function deleteTodayProgressAndExit(){
   const today = getTodayKey();
   const g = STATE.groups[today];
   if (g){
-    for (const id of (g.cardIds||[])){
-      delete STATE.cards[id];
-      if (STATE.ignoreList) delete STATE.ignoreList[id];
-      await setIgnored(USER.uid, id, false);
-      // delete card doc
-      // (optional) you can deleteCard here later if you want
-    }
+    const ids = (g.cardIds||[]).slice();
     g.cardIds = [];
-    await saveGroup(USER.uid, g);
+    // delete docs
+    await Promise.all([
+      ...ids.map(id=>deleteCard(USER.uid, id)),
+      saveGroup(USER.uid, g)
+    ]);
   }
   STATE.meta.addLockDateKey = null;
   STATE.meta.lastActivity = "تم حذف إضافة اليوم غير المكتملة.";
-  await saveBase(USER.uid, pickBase(STATE));
+  await saveUserBaseState(USER.uid, pickBaseState());
   closeModal();
   showView("home");
 }
@@ -585,10 +538,10 @@ async function saveNewCard(){
     return;
   }
 
-  const g = getOrCreateTodayGroupLocal();
-  const id = uuid();
   const today = getTodayKey();
+  const { group:g, created } = getOrCreateTodayGroupLocal();
 
+  const id = uuid();
   const card = {
     id,
     foreign,
@@ -597,6 +550,7 @@ async function saveNewCard(){
     groupKeys: [today],
     level: 0,
     frozenDue: false,
+    ignored: false,
     addedAt: Date.now(),
     addDateKey: today,
     lastAdvanceDateKey: today,
@@ -617,31 +571,28 @@ async function saveNewCard(){
 
   STATE.meta.lastActivity = `تمت إضافة بطاقة جديدة إلى مجموعة ${g.name}.`;
 
-  await saveCard(USER.uid, card);
-  await saveGroup(USER.uid, g);
-  await saveBase(USER.uid, pickBase(STATE));
+  // persist (group + card + base)
+  await Promise.all([
+    saveCard(USER.uid, card),
+    saveGroup(USER.uid, g),
+    ...(created ? [saveGroup(USER.uid, g)] : []),
+    saveUserBaseState(USER.uid, pickBaseState())
+  ]);
 
   clearAddInputs();
   AudioFX.beep("ok");
-  refreshTodayList();
-  refreshHUD();
 }
 
 /* =========================
-   Overdue modal (fixed logic)
+   Overdue modal (mandatory)
    ========================= */
-function isModalOpen(){
-  return qs("#modalHost")?.classList.contains("show");
-}
-
-async function checkOverdueModal(){
+function checkOverdueModal(){
   const today = getTodayKey();
   const dueGroups = dueGroupsToday();
-  if (dueGroups.length === 0) return false;
+  if (dueGroups.length === 0) return;
 
-  if (STATE.meta.resolvedOverdueDateKey === today) return false;
-  if (STATE.meta.lastAttendanceDateKey === today) return false;
-  if (isModalOpen()) return true;
+  if (STATE.meta.resolvedOverdueDateKey === today) return;
+  if (STATE.meta.lastAttendanceDateKey === today) return;
 
   const decisions = {};
   let body = `<div class="muted" style="margin-bottom:10px">لديك مجموعات يومية مستحقة. اختر إجراءً لكل مجموعة ثم اضغط "حسنًا".</div>`;
@@ -676,43 +627,37 @@ async function checkOverdueModal(){
     const missing = dueGroups.filter(g=>!decisions[g.id]);
     if (missing.length){ AudioFX.beep("bad"); return; }
 
-    // Apply decisions
+    const dirtyCards = [];
+
     for (const g of dueGroups){
       const d = decisions[g.id];
       const ids = g.cardIds || [];
-
-      if (d === "reset"){
-        for (const id of ids){
-          const c = STATE.cards[id];
-          if (c){
-            c.level = 0;
-            c.frozenDue = false;
-            await saveCard(USER.uid, c);
-          }
-        }
-      } else if (d === "ignore"){
-        for (const id of ids){
-          if (!STATE.ignoreList) STATE.ignoreList = {};
-          STATE.ignoreList[id] = true;
-          await setIgnored(USER.uid, id, true);
-        }
-      } else {
-        // review -> just unfreeze
-        for (const id of ids){
-          const c = STATE.cards[id];
-          if (c){
-            c.frozenDue = false;
-            await saveCard(USER.uid, c);
-          }
+      for (const id of ids){
+        const c = STATE.cards[id];
+        if (!c) continue;
+        if (d === "reset"){
+          c.level = 0;
+          c.frozenDue = false;
+          dirtyCards.push(c);
+        } else if (d === "ignore"){
+          c.ignored = true;
+          dirtyCards.push(c);
+        } else {
+          c.frozenDue = false;
+          dirtyCards.push(c);
         }
       }
     }
 
     STATE.meta.resolvedOverdueDateKey = today;
     STATE.meta.lastActivity = "تم تحديد إجراء للمجموعات المستحقة.";
-    await saveBase(USER.uid, pickBase(STATE));
+
+    await Promise.all([
+      ...dirtyCards.map(c=>saveCard(USER.uid, c)),
+      saveUserBaseState(USER.uid, pickBaseState())
+    ]);
+
     closeModal();
-    refreshHUD();
   });
 
   openModal("مجموعات مستحقة", body, [btnAllReview, btnAllReset, btnAllIgnore, ok], {closable:false});
@@ -736,8 +681,6 @@ async function checkOverdueModal(){
       if (btn) btn.classList.add("on");
     });
   }
-
-  return true;
 }
 
 /* =========================
@@ -791,6 +734,9 @@ function startLesson(){
   showView("game");
   qs("#btnNextGame").style.display="";
   qs("#btnGoHint").style.display="";
+  qs("#btnUseSkip").style.display="";
+  qs("#btnUseHelp").style.display="";
+  qs("#btnHelpLog").style.display="";
 
   updateHUD();
   startTimer();
@@ -857,7 +803,6 @@ function consumeHelpOrAskBuy(){
 }
 
 function launchNextGame(){
-  if (!PLAY) return;
   PLAY.usedHelpInGame=false;
   const next = PLAY.gameQueue.find(g=>!PLAY.playedGames.includes(g));
   if (!next){
@@ -905,7 +850,7 @@ function renderGame(gameKey){
       makeBtn("نعم","btn btn--primary", async ()=>{
         closeModal();
         STATE.inventory.skip -= 1;
-        await saveBase(USER.uid, pickBase(STATE));
+        await saveUserBaseState(USER.uid, pickBaseState());
         applyPerfectGameRewards();
         PLAY.playedGames.push(gameKey);
         afterGameFinished(gameKey);
@@ -919,7 +864,7 @@ function renderGame(gameKey){
 
     STATE.inventory.help -= 1;
     PLAY.usedHelpInGame = true;
-    await saveBase(USER.uid, pickBase(STATE));
+    await saveUserBaseState(USER.uid, pickBaseState());
 
     if (gameKey==="matching") matchingHelp();
     if (gameKey==="flip") flipHelp();
@@ -1100,7 +1045,6 @@ function gameFlip(){
     goldRaw:0
   };
 
-  // show 5s
   tiles.forEach(t=>{
     const el=document.createElement("div");
     el.className="tile";
@@ -1468,7 +1412,7 @@ function showHelpLog(game){
 }
 
 function matchingHelp(){
-  const remaining = PLAY.cards.filter(c=>!STATE.ignoreList?.[c.id]);
+  const remaining = PLAY.cards.filter(c=>!c.ignored);
   if (!remaining.length) return;
   const pick = remaining[Math.floor(Math.random()*remaining.length)];
   const tiles = qsa("#gameArea .tile").filter(t=>!t.classList.contains("gone"));
@@ -1523,35 +1467,27 @@ function typingHelp(){
   ]);
 }
 
-/* -------- After game finished (fixed next button) -------- */
+/* -------- After game finished (FIX next button) -------- */
 function afterGameFinished(gameKey){
   const done4 = ["matching","flip","scrambled","typing"].every(g=>PLAY.playedGames.includes(g));
   if (done4) qs("#btnNextGame").style.display="none";
 
   const buttons = [];
-
   if (!done4){
-    buttons.push(
-      makeBtn(`<span class="material-icons">sports_esports</span> اللعبة التالية`, "btn btn--primary", ()=>{
-        closeModal();
-        launchNextGame();
-      })
-    );
-  }
-
-  buttons.push(
-    makeBtn(`<span class="material-icons">task_alt</span> تقييم البطاقات`, "btn btn--primary", ()=>{
+    buttons.push(makeBtn(`<span class="material-icons">sports_esports</span> اللعبة التالية`, "btn btn--primary", ()=>{
       closeModal();
-      goToHint();
-    })
-  );
+      launchNextGame();
+    }));
+  }
+  buttons.push(makeBtn(`<span class="material-icons">task_alt</span> تقييم البطاقات`, "btn btn--primary", ()=>{
+    closeModal();
+    goToHint();
+  }));
 
   openModal("تم إنهاء اللعبة", `
     <div class="modalRow">
       <div class="muted">اللعبة: <b>${escapeHTML(gameTitle(gameKey))}</b></div>
-      <div class="muted" style="margin-top:8px">
-        ${done4 ? "انتهت الألعاب الأربع. انتقل لتقييم البطاقات." : "يمكنك اختيار اللعبة التالية أو الانتقال لتقييم البطاقات."}
-      </div>
+      <div class="muted" style="margin-top:8px">${done4 ? "انتهت الألعاب الأربع. انتقل للتقييم." : "يمكنك اختيار اللعبة التالية أو الانتقال للتقييم."}</div>
     </div>
   `, buttons);
 }
@@ -1620,7 +1556,7 @@ function renderHintCard(){
   qs("#rateHard").onclick=()=>rateHint(c.id, "صعب");
 }
 
-async function rateHint(cardId, evalText){
+function rateHint(cardId, evalText){
   const c = STATE.cards[cardId];
   if (!c) return;
 
@@ -1632,7 +1568,8 @@ async function rateHint(cardId, evalText){
   c.lastHintEval = evalText;
   c.lastHintEvalAt = Date.now();
 
-  await saveCard(USER.uid, c);
+  // save immediately to keep consistency
+  saveCard(USER.uid, c).catch(()=>{});
 
   PLAY.hintIndex++;
   AudioFX.beep("ok");
@@ -1657,7 +1594,7 @@ async function finishHintAll(){
     if (c) c.frozenDue = false;
   });
 
-  await saveBase(USER.uid, pickBase(STATE));
+  await saveUserBaseState(USER.uid, pickBaseState());
 
   AudioFX.beep("coin");
   AudioFX.beep("rank");
@@ -1695,7 +1632,7 @@ async function handleAbortLesson(){
   if (PLAY && !PLAY.completedHintAll){
     cancelLesson();
     STATE.meta.lastActivity = "تم إلغاء الدرس لعدم إكمال تقييم البطاقات.";
-    await saveBase(USER.uid, pickBase(STATE));
+    await saveUserBaseState(USER.uid, pickBaseState());
   }
   endPlay(true);
 }
@@ -1721,7 +1658,7 @@ async function buyExtraCard(){
   STATE.wallet.gold -= 100;
   STATE.inventory.extraCardsBought = (STATE.inventory.extraCardsBought||0) + 1;
   STATE.meta.lastActivity = "تم شراء بطاقة إضافية لليوم.";
-  await saveBase(USER.uid, pickBase(STATE));
+  await saveUserBaseState(USER.uid, pickBaseState());
   AudioFX.beep("coin");
 }
 async function buySkip(){
@@ -1735,7 +1672,7 @@ async function buySkip(){
   STATE.wallet.gold -= 900;
   STATE.inventory.skip = (STATE.inventory.skip||0) + 1;
   STATE.meta.lastActivity = "تم شراء تخطي.";
-  await saveBase(USER.uid, pickBase(STATE));
+  await saveUserBaseState(USER.uid, pickBaseState());
   AudioFX.beep("coin");
 }
 async function buyHelp(){
@@ -1749,7 +1686,7 @@ async function buyHelp(){
   STATE.wallet.gold -= 150;
   STATE.inventory.help = (STATE.inventory.help||0) + 1;
   STATE.meta.lastActivity = "تم شراء مساعدة.";
-  await saveBase(USER.uid, pickBase(STATE));
+  await saveUserBaseState(USER.uid, pickBaseState());
   AudioFX.beep("coin");
 }
 async function buyFuel(){
@@ -1763,14 +1700,14 @@ async function buyFuel(){
   STATE.wallet.gold -= 250;
   STATE.inventory.fuel = (STATE.inventory.fuel||0) + 1;
   STATE.meta.lastActivity = "تم شراء وقود.";
-  await saveBase(USER.uid, pickBase(STATE));
+  await saveUserBaseState(USER.uid, pickBaseState());
   AudioFX.beep("coin");
 }
 
 /* =========================
-   Start play (fixed: block on overdue modal)
+   Start play
    ========================= */
-async function handleStartPlay(){
+function handleStartPlay(){
   const cards = buildLessonCards();
   if (cards.length === 0){
     AudioFX.beep("bad");
@@ -1779,10 +1716,7 @@ async function handleStartPlay(){
     ]);
     return;
   }
-
-  const shown = await checkOverdueModal();
-  if (shown) return; // user must decide first
-
+  checkOverdueModal();
   startLesson();
 }
 
@@ -1907,85 +1841,78 @@ function wireUI(){
 
   qs("#userBtn").onclick=()=>{ AudioFX.beep("tap"); openAccountModal(); };
 
-  // prevent rewards if closed before hint completion
   window.addEventListener("beforeunload", ()=>{
     if (PLAY && !PLAY.completedHintAll){
       cancelLesson();
     }
   });
 
-  // date ticker: check once per minute
-  if (DATE_TICKER) clearInterval(DATE_TICKER);
-  DATE_TICKER = setInterval(async ()=>{
-    const nowKey = getTodayKey();
-    if (nowKey !== CURRENT_DAY_KEY){
-      CURRENT_DAY_KEY = nowKey;
-      await persistDayRolloverIfNeeded();
-      refreshHUD();
-      refreshTodayList();
-      refreshCardsList(qs("#cardsSearch")?.value || "");
-    }
-  }, 60000);
-
-  // when user comes back to tab
-  document.addEventListener("visibilitychange", async ()=>{
-    if (document.visibilityState === "visible"){
-      const nowKey = getTodayKey();
-      if (nowKey !== CURRENT_DAY_KEY){
-        CURRENT_DAY_KEY = nowKey;
-        await persistDayRolloverIfNeeded();
+  // مهم: لا تفحص تغير اليوم كل ثانية. فقط عند focus/visibility
+  document.addEventListener("visibilitychange", ()=>{
+    if (document.visibilityState === "visible" && STATE){
+      // سيتم التقاطه في snapshot القادم عادة، لكن هذا يساعد لو بقيت الصفحة مفتوحة
+      const { baseDirty, dirtyCardIds } = advanceCardsUpToToday();
+      if (baseDirty || dirtyCardIds.size){
+        Promise.all([
+          ...(baseDirty ? [saveUserBaseState(USER.uid, pickBaseState())] : []),
+          ...Array.from(dirtyCardIds).map(id=>saveCard(USER.uid, STATE.cards[id]))
+        ]).catch(()=>{});
       }
-      refreshHUD();
-      refreshTodayList();
-      refreshCardsList(qs("#cardsSearch")?.value || "");
-      await checkOverdueModal();
+    }
+  });
+  window.addEventListener("focus", ()=>{
+    if (STATE){
+      const { baseDirty, dirtyCardIds } = advanceCardsUpToToday();
+      if (baseDirty || dirtyCardIds.size){
+        Promise.all([
+          ...(baseDirty ? [saveUserBaseState(USER.uid, pickBaseState())] : []),
+          ...Array.from(dirtyCardIds).map(id=>saveCard(USER.uid, STATE.cards[id]))
+        ]).catch(()=>{});
+      }
     }
   });
 }
 
 /* =========================
-   Start app
+   Cloud sync start
    ========================= */
 async function startApp(user){
   USER = user;
-  await ensureUserDoc(user);
+  await ensureUserDoc(user).catch(()=>{});
 
-  // load full (base + cards + groups + ignore)
-  STATE = await loadFullState(user.uid);
+  if (UNSUB) UNSUB();
+  UNSUB = watchUserState(user.uid, async (st)=>{
+    STATE = st;
 
-  // ensure profile
-  STATE.profile = STATE.profile || {};
-  STATE.profile.displayName = STATE.profile.displayName || user.displayName || null;
-  STATE.profile.email = STATE.profile.email || user.email || null;
+    // ensure profile local
+    STATE.profile = STATE.profile || {};
+    STATE.profile.displayName = STATE.profile.displayName || user.displayName || null;
+    STATE.profile.email = STATE.profile.email || user.email || null;
 
-  // ensure today group
-  getOrCreateTodayGroupLocal();
+    // ensure today's group exists (local + cloud if missing)
+    const { group:g, created } = getOrCreateTodayGroupLocal();
+    if (created){
+      saveGroup(USER.uid, g).catch(()=>{});
+    }
 
-  // apply day rollover once at start (and persist if needed)
-  await persistDayRolloverIfNeeded();
-
-  // watch base only (no write-backs here)
-  if (UNSUB_BASE) UNSUB_BASE();
-  UNSUB_BASE = watchBase(user.uid, (base)=>{
-    if (!STATE) return;
-    // merge base safely
-    STATE.meta = base.meta || STATE.meta;
-    STATE.wallet = base.wallet || STATE.wallet;
-    STATE.rank = base.rank || STATE.rank;
-    STATE.inventory = base.inventory || STATE.inventory;
-    STATE.profile = base.profile || STATE.profile;
+    // daily advance only when day changed (dirty-based)
+    const { baseDirty, dirtyCardIds } = advanceCardsUpToToday();
+    if (baseDirty || dirtyCardIds.size){
+      await Promise.all([
+        ...(baseDirty ? [saveUserBaseState(USER.uid, pickBaseState())] : []),
+        ...Array.from(dirtyCardIds).map(id=>saveCard(USER.uid, STATE.cards[id]))
+      ]).catch(()=>{});
+    }
 
     refreshHUD();
+    refreshTodayList();
+    refreshCardsList(qs("#cardsSearch")?.value || "");
+
+    checkOverdueModal();
   });
 
   wireUI();
   showView("home");
-
-  refreshHUD();
-  refreshTodayList();
-  refreshCardsList("");
-
-  await checkOverdueModal();
 }
 
 /* =========================
