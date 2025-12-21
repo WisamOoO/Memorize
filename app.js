@@ -7,48 +7,43 @@ import {
   accountLevelFromXP,
   difficultyD, levelMultiplier, speedFactor,
   targetProgressForRank, tierMaxSub,
-  ensureUserDoc, watchUserState, saveUserState,
+
+  ensureUserDoc,
+  loadFullState,
+  watchBase,
+  saveBase,
+  saveCard,
+  saveGroup,
+  setIgnored,
+  batchWrite,
+
   doLogout, doDeleteAccountHard, reauthWithPassword
 } from "./auth-guard.js";
 
 /* =========================
-   State (Cloud only)
+   State
    ========================= */
 let USER = null;
 let STATE = null;
-let UNSUB = null;
+let UNSUB_BASE = null;
 
 const MAX_DAILY_BASE = 10;
 const MIN_DAILY_FIRST = 4;
 
+let DATE_TICKER = null;
+let CURRENT_DAY_KEY = nowISODateKey();
+
 function uuid(){
   return "c_" + Math.random().toString(16).slice(2) + "_" + Date.now().toString(16);
 }
-
 function getTodayKey(){ return nowISODateKey(); }
 
-function getOrCreateTodayGroup(){
-  const today = getTodayKey();
-  if (!STATE.groups[today]){
-    STATE.groups[today] = { id: today, name: formatGroupName(today), dateKey: today, cardIds: [] };
-  }
-  return STATE.groups[today];
-}
-
-function todayCapacity(){
-  const extra = Math.min(2, STATE.inventory.extraCardsBought || 0);
-  return MAX_DAILY_BASE + extra;
-}
-function todayCount(){
-  const g = STATE.groups[getTodayKey()];
-  return g ? g.cardIds.length : 0;
-}
 function allCardsArray(){
   return Object.values(STATE.cards || {});
 }
 
 /* =========================
-   Audio FX
+   Audio FX (simple)
    ========================= */
 const AudioFX = (() => {
   let ctx=null;
@@ -154,28 +149,51 @@ function burstFX(xPct=50,yPct=50,count=12){
 }
 
 /* =========================
-   Daily progression
+   Groups / Capacity
    ========================= */
-function advanceCardsUpToToday(){
+function getOrCreateTodayGroupLocal(){
+  const today = getTodayKey();
+  if (!STATE.groups[today]){
+    STATE.groups[today] = { id: today, name: formatGroupName(today), dateKey: today, cardIds: [] };
+  }
+  return STATE.groups[today];
+}
+
+function todayCapacity(){
+  const extra = Math.min(2, STATE.inventory.extraCardsBought || 0);
+  return MAX_DAILY_BASE + extra;
+}
+function todayCount(){
+  const g = STATE.groups[getTodayKey()];
+  return g ? (g.cardIds?.length || 0) : 0;
+}
+
+/* =========================
+   Day rollover (NO infinite loop)
+   ========================= */
+function computeAndApplyDayRollover(){
   const today = getTodayKey();
   const lastOpen = STATE.meta.lastOpenDateKey || today;
   const delta = daysBetween(lastOpen, today);
   if (delta <= 0){
     STATE.meta.lastOpenDateKey = today;
-    return;
+    return { changed:false, changedCardIds:[] };
   }
 
+  const changedCardIds = [];
+
+  // streak/fuel handling
   const yesterday = addDays(today, -1);
   if (STATE.meta.lastAttendanceDateKey !== yesterday && STATE.meta.lastAttendanceDateKey !== today){
     if ((STATE.inventory.fuel||0) > 0){
       STATE.inventory.fuel -= 1;
       STATE.meta.lastActivity = "تم استخدام 1 وقود لحماية الحماسة.";
-      AudioFX.beep("coin");
     } else {
       STATE.meta.streak = 0;
     }
   }
 
+  // card progression day-by-day
   const cards = Object.values(STATE.cards||{});
   for (const c of cards){
     if (!c) continue;
@@ -185,6 +203,7 @@ function advanceCardsUpToToday(){
     if (steps <= 0) continue;
 
     let curKey = lastAdv;
+    let anyChange = false;
 
     for (let i=0;i<steps;i++){
       const nextKey = addDays(curKey, 1);
@@ -194,38 +213,85 @@ function advanceCardsUpToToday(){
         continue;
       }
 
-      if (c.level < 6) c.level += 1;
+      if (c.level < 6) { c.level += 1; anyChange = true; }
 
       const age = daysBetween(c.addDateKey, nextKey);
-      if (age >= 30) c.level = 7;
+      if (age >= 30 && c.level !== 7){
+        c.level = 7; anyChange = true;
+      }
 
       if (DUE_LEVELS.has(c.level) && STATE.meta.lastAttendanceDateKey !== nextKey){
-        c.frozenDue = true;
+        if (c.frozenDue !== true) { c.frozenDue = true; anyChange = true; }
       }
 
       curKey = nextKey;
     }
 
     c.lastAdvanceDateKey = today;
+    if (anyChange) changedCardIds.push(c.id);
   }
 
+  // refund unused extra cards
   const unused = Math.max(0, (STATE.inventory.extraCardsBought||0) - (STATE.inventory.extraCardsUsed||0));
   if (unused > 0){
     const refund = Math.floor(unused * 100 * 0.5);
     STATE.wallet.gold += refund;
     STATE.meta.lastActivity = `تمت إعادة ${refund} ذهب (50% من بطاقات إضافية غير مستخدمة).`;
-    AudioFX.beep("coin");
   }
+
   STATE.inventory.dateKey = today;
   STATE.inventory.extraCardsBought = 0;
   STATE.inventory.extraCardsUsed = 0;
   STATE.meta.addLockDateKey = null;
 
   STATE.meta.lastOpenDateKey = today;
+
+  return { changed:true, changedCardIds };
+}
+
+async function persistDayRolloverIfNeeded(){
+  const { changed, changedCardIds } = computeAndApplyDayRollover();
+  if (!changed) return;
+
+  // ensure today group exists
+  const g = getOrCreateTodayGroupLocal();
+
+  await batchWrite(USER.uid, (b)=>{
+    // base
+    b.set(
+      // user doc
+      (await import("./auth-guard.js")).userDocRef(USER.uid),
+      { base: pickBase(STATE), updatedAt: (await import("./firebase.js")).serverTimestamp?.() },
+      { merge:true }
+    );
+  }).catch(async ()=>{
+    // fallback: simple saves (no batch)
+    await saveBase(USER.uid, pickBase(STATE));
+  });
+
+  // Save today group if created locally
+  await saveGroup(USER.uid, g);
+
+  // Save changed cards only
+  for (const id of changedCardIds){
+    const c = STATE.cards[id];
+    if (c) await saveCard(USER.uid, c);
+  }
+}
+
+/* helper: pick base only */
+function pickBase(full){
+  return {
+    meta: full.meta,
+    wallet: full.wallet,
+    rank: full.rank,
+    inventory: full.inventory,
+    profile: full.profile
+  };
 }
 
 /* =========================
-   Due cards (today)
+   Due cards
    ========================= */
 function dueCardsToday(){
   return allCardsArray()
@@ -275,7 +341,7 @@ function applyRatingDelta(delta){
    UI refresh
    ========================= */
 function refreshHUD(){
-  const g = getOrCreateTodayGroup();
+  const g = getOrCreateTodayGroupLocal();
   qs("#todayLabel").textContent = `مجموعة اليوم: ${g.name}`;
   qs("#goldLabel").textContent = STATE.wallet.gold;
 
@@ -314,11 +380,11 @@ function refreshHUD(){
 }
 
 function refreshTodayList(){
-  const g = getOrCreateTodayGroup();
+  const g = getOrCreateTodayGroupLocal();
   const list = qs("#todayList");
   list.innerHTML = "";
 
-  g.cardIds.slice().reverse().forEach(id=>{
+  (g.cardIds||[]).slice().reverse().forEach(id=>{
     const c = STATE.cards[id];
     if (!c) return;
     const el = document.createElement("div");
@@ -328,76 +394,22 @@ function refreshTodayList(){
         <div class="cardTile__front">${escapeHTML(c.foreign)}</div>
         <div class="badge">مستوى ${c.level}</div>
       </div>
+      <div class="cardTile__back">${escapeHTML(c.native)}</div>
+      <div class="cardTile__hint">${escapeHTML(c.hint)}</div>
       <div class="badges">
         <span class="badge">${formatGroupName(c.addDateKey)}</span>
         <span class="badge">آخر تقييم: ${escapeHTML(c.lastHintEval || "-")}</span>
       </div>
     `;
-    el.onclick = ()=>openCardDetailsModal(c.id);
+    el.onclick = ()=>el.classList.toggle("open");
     list.appendChild(el);
   });
 
-  if (!g.cardIds.length){
+  if (!(g.cardIds||[]).length){
     list.innerHTML = `<div class="muted">لا توجد بطاقات اليوم بعد.</div>`;
   }
 }
 
-/* =========================
-   Cards page: Modes (NEW)
-   ========================= */
-const CARDS_MODE = {
-  NORMAL: "normal",
-  PLAY_SELECT: "play_select",
-  IGNORE_SELECT: "ignore_select"
-};
-let cardsMode = CARDS_MODE.NORMAL;
-let selectedCardIds = new Set();
-
-function setCardsMode(mode){
-  cardsMode = mode;
-  selectedCardIds = new Set();
-  updateCardsTopButtons();
-  refreshCardsList(qs("#cardsSearch").value || "");
-}
-
-function updateCardsTopButtons(){
-  const btnPlay = qs("#btnCardsPlay");
-  const btnSel  = qs("#btnCardsSelect");
-  const selCount = selectedCardIds.size;
-
-  if (cardsMode === CARDS_MODE.NORMAL){
-    btnPlay.disabled = false;
-    btnPlay.innerHTML = `<span class="material-icons">sports_esports</span> لعب الآن`;
-    btnSel.disabled = false;
-    btnSel.innerHTML = `<span class="material-icons">checklist</span> تحديد`;
-    qs("#cardsSub").textContent = "اضغط البطاقة لعرض التفاصيل.";
-    return;
-  }
-
-  if (cardsMode === CARDS_MODE.PLAY_SELECT){
-    btnSel.innerHTML = `<span class="material-icons">close</span> إلغاء`;
-    btnPlay.innerHTML = `<span class="material-icons">play_circle</span> بداية اللعبة`;
-    btnPlay.disabled = selCount < 4;
-    qs("#cardsSub").textContent = `حدد 4 بطاقات على الأقل للتدريب. (المحدد: ${selCount})`;
-    return;
-  }
-
-  if (cardsMode === CARDS_MODE.IGNORE_SELECT){
-    btnSel.innerHTML = `<span class="material-icons">close</span> إلغاء`;
-    btnPlay.innerHTML = `<span class="material-icons">visibility_off</span> تجاهل`;
-    btnPlay.disabled = selCount < 1;
-    qs("#cardsSub").textContent = `حدد بطاقة أو أكثر لتجاهلها. (المحدد: ${selCount})`;
-    return;
-  }
-}
-
-/* =========================
-   Cards list rendering (UPDATED)
-   - Normal card: foreign + level + last eval only
-   - Click:
-     - in mode select => toggle selection
-     - in normal => open details modal
-========================= */
 function refreshCardsList(filter=""){
   const list = qs("#cardsList");
   list.innerHTML = "";
@@ -410,7 +422,7 @@ function refreshCardsList(filter=""){
              (c.native||"").toLowerCase().includes(f) ||
              (c.hint||"").toLowerCase().includes(f);
     })
-    .sort((a,b)=> b.addedAt - a.addedAt);
+    .sort((a,b)=> (b.addedAt||0) - (a.addedAt||0));
 
   if (!cards.length){
     list.innerHTML = `<div class="muted">لا توجد بطاقات.</div>`;
@@ -421,174 +433,76 @@ function refreshCardsList(filter=""){
     const ignored = !!STATE.ignoreList?.[c.id];
     const el = document.createElement("div");
     el.className = "cardTile";
-
-    // selection UI markers
-    if (cardsMode !== CARDS_MODE.NORMAL && !ignored){
-      el.classList.add("selectable");
-      if (selectedCardIds.has(c.id)) el.classList.add("selected");
-    }
-    if (ignored) el.style.opacity = "0.65";
-
-    const lastEval = c.lastHintEval || "-";
-
     el.innerHTML = `
-      <div class="selMark"><span class="material-icons">check</span></div>
       <div class="cardTile__row">
         <div class="cardTile__front">${escapeHTML(c.foreign)}</div>
         <div class="badge">${ignored ? "متجاهلة" : `مستوى ${c.level}`}</div>
       </div>
+      <div class="cardTile__back">${escapeHTML(c.native)}</div>
+      <div class="cardTile__hint">${escapeHTML(c.hint)}</div>
       <div class="badges">
-        <span class="badge">آخر تقييم: ${escapeHTML(lastEval)}</span>
+        <span class="badge">آخر تقييم: ${escapeHTML(c.lastHintEval || "-")}</span>
       </div>
     `;
-
     el.onclick = ()=>{
-      if (cardsMode === CARDS_MODE.NORMAL){
-        openCardDetailsModal(c.id);
-        return;
-      }
-
-      if (ignored) return; // لا يسمح بتحديد المتجاهلة
-      // toggle selection
-      if (selectedCardIds.has(c.id)) selectedCardIds.delete(c.id);
-      else selectedCardIds.add(c.id);
-
-      updateCardsTopButtons();
-      refreshCardsList(qs("#cardsSearch").value || "");
+      openModal("تفاصيل البطاقة", `
+        <div class="modalRow">
+          <div><b>النص:</b> ${escapeHTML(c.foreign)}</div>
+          <div><b>الترجمة:</b> ${escapeHTML(c.native)}</div>
+          <div><b>التلميح:</b> ${escapeHTML(c.hint)}</div>
+          <div><b>المستوى:</b> ${ignored ? "متجاهلة" : c.level}</div>
+          <div><b>آخر تقييم:</b> ${escapeHTML(c.lastHintEval || "-")}</div>
+        </div>
+      `, [
+        makeBtn(
+          `<span class="material-icons">visibility_off</span> ${ignored ? "إلغاء التجاهل" : "تجاهل"}`,
+          "btn btn--primary",
+          async ()=>{
+            if (!STATE.ignoreList) STATE.ignoreList = {};
+            if (ignored){
+              delete STATE.ignoreList[c.id];
+              await setIgnored(USER.uid, c.id, false);
+              STATE.meta.lastActivity = "تم إلغاء تجاهل البطاقة.";
+            }else{
+              STATE.ignoreList[c.id] = true;
+              await setIgnored(USER.uid, c.id, true);
+              STATE.meta.lastActivity = "تم تجاهل البطاقة.";
+            }
+            await saveBase(USER.uid, pickBase(STATE));
+            closeModal();
+            refreshCardsList(qs("#cardsSearch")?.value || "");
+            refreshHUD();
+          }
+        ),
+        makeBtn(`<span class="material-icons">close</span> إغلاق`, "btn", closeModal)
+      ]);
     };
-
     list.appendChild(el);
   });
 }
 
 /* =========================
-   Card details modal (UPDATED)
-   - show: foreign, native, hint, groups, level, last eval
-   - buttons: close / ignore / edit
-   - edit does NOT change level or last eval
-========================= */
-function groupNameByKey(k){
-  const g = STATE.groups?.[k];
-  if (!g) return formatGroupName(k);
-  return g.name || formatGroupName(k);
-}
-
-function openCardDetailsModal(cardId){
-  const c = STATE.cards?.[cardId];
-  if (!c) return;
-
-  const ignored = !!STATE.ignoreList?.[c.id];
-  const groups = (c.groupKeys || []).map(k=>groupNameByKey(k));
-
-  const groupsHTML = groups.length
-    ? `<div class="badges">${groups.map(n=>`<span class="badge">${escapeHTML(n)}</span>`).join("")}</div>`
-    : `<div class="muted">لا توجد مجموعات.</div>`;
-
-  openModal("تفاصيل البطاقة", `
-    <div class="modalRow">
-      <div><b>النص:</b> ${escapeHTML(c.foreign)}</div>
-      <div style="margin-top:8px"><b>الترجمة:</b> ${escapeHTML(c.native)}</div>
-      <div style="margin-top:8px"><b>التلميح:</b> ${escapeHTML(c.hint)}</div>
-      <div class="divider"></div>
-      <div><b>المجموعات:</b></div>
-      ${groupsHTML}
-      <div class="divider"></div>
-      <div><b>المستوى:</b> ${ignored ? "متجاهلة" : c.level}</div>
-      <div><b>آخر تقييم:</b> ${escapeHTML(c.lastHintEval || "-")}</div>
-    </div>
-  `, [
-    makeBtn(`<span class="material-icons">edit</span> تعديل`, "btn btn--primary", ()=>{
-      closeModal();
-      openEditCardModal(cardId);
-    }),
-    makeBtn(`<span class="material-icons">visibility_off</span> ${ignored ? "إلغاء التجاهل" : "تجاهل"}`, "btn", async ()=>{
-      if (ignored) delete STATE.ignoreList[c.id];
-      else STATE.ignoreList[c.id] = true;
-      STATE.meta.lastActivity = "تم تحديث تجاهل البطاقة.";
-      await saveUserState(USER.uid, STATE);
-      closeModal();
-      refreshCardsList(qs("#cardsSearch").value || "");
-      refreshHUD();
-    }),
-    makeBtn(`<span class="material-icons">close</span> إغلاق`, "btn btn--danger", closeModal)
-  ]);
-}
-
-function openEditCardModal(cardId){
-  const c = STATE.cards?.[cardId];
-  if (!c) return;
-
-  openModal("تعديل البطاقة", `
-    <div class="modalRow">
-      <div class="formGrid one">
-        <div class="field">
-          <label>النص الأصلي</label>
-          <input id="editFront" maxlength="45" value="${escapeHTML(c.foreign)}" />
-          <div class="field__sub">حتى 45 حرف</div>
-        </div>
-        <div class="field">
-          <label>الترجمة / المعنى</label>
-          <input id="editBack" maxlength="45" value="${escapeHTML(c.native)}" />
-          <div class="field__sub">حتى 45 حرف</div>
-        </div>
-        <div class="field">
-          <label>التلميح</label>
-          <input id="editHint" maxlength="60" value="${escapeHTML(c.hint)}" />
-          <div class="field__sub">حتى 60 حرف</div>
-        </div>
-      </div>
-      <div class="muted tiny">ملاحظة: التعديل لا يغيّر مستوى البطاقة ولا آخر تقييم.</div>
-    </div>
-  `, [
-    makeBtn(`<span class="material-icons">save</span> حفظ`, "btn btn--primary", async ()=>{
-      const nf = qs("#editFront").value.trim();
-      const nb = qs("#editBack").value.trim();
-      const nh = qs("#editHint").value.trim();
-      if (!nf || !nb || !nh){
-        AudioFX.beep("bad");
-        openModal("خطأ","كل الحقول إلزامية.",[makeBtn("إغلاق","btn btn--primary", closeModal)]);
-        return;
-      }
-
-      // تعديل النص فقط بدون لمس المستوى/التقييم
-      c.foreign = nf;
-      c.native  = nb;
-      c.hint    = nh;
-
-      STATE.meta.lastActivity = "تم تعديل البطاقة.";
-      await saveUserState(USER.uid, STATE);
-
-      AudioFX.beep("ok");
-      closeModal();
-      refreshCardsList(qs("#cardsSearch").value || "");
-      refreshTodayList();
-    }),
-    makeBtn(`<span class="material-icons">close</span> إلغاء`, "btn btn--danger", closeModal)
-  ], {closable:false});
-}
-
-/* =========================
-   Views
+   Views + hide nav in game
    ========================= */
 function showView(name){
   qsa(".view").forEach(v=>v.classList.remove("active"));
   qs(`#view-${name}`).classList.add("active");
   qsa(".nav__btn").forEach(b=>b.classList.toggle("active", b.dataset.view === name));
 
+  document.body.classList.toggle("inGame", name === "game");
+
   if (name==="add"){
     clearAddInputs();
     refreshTodayList();
   }
   if (name==="cards"){
-    // reset modes when entering cards view
-    if (cardsMode !== CARDS_MODE.NORMAL) setCardsMode(CARDS_MODE.NORMAL);
     refreshCardsList(qs("#cardsSearch").value || "");
   }
   refreshHUD();
 }
 
 /* =========================
-   Add flow (cloud)
+   Add flow
    ========================= */
 function clearAddInputs(){
   qs("#inFront").value="";
@@ -616,15 +530,19 @@ async function deleteTodayProgressAndExit(){
   const today = getTodayKey();
   const g = STATE.groups[today];
   if (g){
-    g.cardIds.forEach(id=>{
+    for (const id of (g.cardIds||[])){
       delete STATE.cards[id];
-      delete STATE.ignoreList[id];
-    });
+      if (STATE.ignoreList) delete STATE.ignoreList[id];
+      await setIgnored(USER.uid, id, false);
+      // delete card doc
+      // (optional) you can deleteCard here later if you want
+    }
     g.cardIds = [];
+    await saveGroup(USER.uid, g);
   }
   STATE.meta.addLockDateKey = null;
   STATE.meta.lastActivity = "تم حذف إضافة اليوم غير المكتملة.";
-  await saveUserState(USER.uid, STATE);
+  await saveBase(USER.uid, pickBase(STATE));
   closeModal();
   showView("home");
 }
@@ -667,7 +585,7 @@ async function saveNewCard(){
     return;
   }
 
-  const g = getOrCreateTodayGroup();
+  const g = getOrCreateTodayGroupLocal();
   const id = uuid();
   const today = getTodayKey();
 
@@ -687,6 +605,7 @@ async function saveNewCard(){
   };
 
   STATE.cards[id] = card;
+  g.cardIds = g.cardIds || [];
   g.cardIds.push(id);
 
   if (g.cardIds.length > MAX_DAILY_BASE){
@@ -697,22 +616,32 @@ async function saveNewCard(){
   if (g.cardIds.length >= MIN_DAILY_FIRST) STATE.meta.addLockDateKey = null;
 
   STATE.meta.lastActivity = `تمت إضافة بطاقة جديدة إلى مجموعة ${g.name}.`;
-  await saveUserState(USER.uid, STATE);
+
+  await saveCard(USER.uid, card);
+  await saveGroup(USER.uid, g);
+  await saveBase(USER.uid, pickBase(STATE));
 
   clearAddInputs();
   AudioFX.beep("ok");
+  refreshTodayList();
+  refreshHUD();
 }
 
 /* =========================
-   Overdue modal
+   Overdue modal (fixed logic)
    ========================= */
-function checkOverdueModal(){
+function isModalOpen(){
+  return qs("#modalHost")?.classList.contains("show");
+}
+
+async function checkOverdueModal(){
   const today = getTodayKey();
   const dueGroups = dueGroupsToday();
-  if (dueGroups.length === 0) return;
+  if (dueGroups.length === 0) return false;
 
-  if (STATE.meta.resolvedOverdueDateKey === today) return;
-  if (STATE.meta.lastAttendanceDateKey === today) return;
+  if (STATE.meta.resolvedOverdueDateKey === today) return false;
+  if (STATE.meta.lastAttendanceDateKey === today) return false;
+  if (isModalOpen()) return true;
 
   const decisions = {};
   let body = `<div class="muted" style="margin-bottom:10px">لديك مجموعات يومية مستحقة. اختر إجراءً لكل مجموعة ثم اضغط "حسنًا".</div>`;
@@ -747,30 +676,43 @@ function checkOverdueModal(){
     const missing = dueGroups.filter(g=>!decisions[g.id]);
     if (missing.length){ AudioFX.beep("bad"); return; }
 
-    dueGroups.forEach(g=>{
+    // Apply decisions
+    for (const g of dueGroups){
       const d = decisions[g.id];
+      const ids = g.cardIds || [];
+
       if (d === "reset"){
-        g.cardIds.forEach(id=>{
+        for (const id of ids){
           const c = STATE.cards[id];
           if (c){
             c.level = 0;
             c.frozenDue = false;
+            await saveCard(USER.uid, c);
           }
-        });
+        }
       } else if (d === "ignore"){
-        g.cardIds.forEach(id=>STATE.ignoreList[id]=true);
+        for (const id of ids){
+          if (!STATE.ignoreList) STATE.ignoreList = {};
+          STATE.ignoreList[id] = true;
+          await setIgnored(USER.uid, id, true);
+        }
       } else {
-        g.cardIds.forEach(id=>{
+        // review -> just unfreeze
+        for (const id of ids){
           const c = STATE.cards[id];
-          if (c) c.frozenDue = false;
-        });
+          if (c){
+            c.frozenDue = false;
+            await saveCard(USER.uid, c);
+          }
+        }
       }
-    });
+    }
 
     STATE.meta.resolvedOverdueDateKey = today;
     STATE.meta.lastActivity = "تم تحديد إجراء للمجموعات المستحقة.";
-    await saveUserState(USER.uid, STATE);
+    await saveBase(USER.uid, pickBase(STATE));
     closeModal();
+    refreshHUD();
   });
 
   openModal("مجموعات مستحقة", body, [btnAllReview, btnAllReset, btnAllIgnore, ok], {closable:false});
@@ -794,6 +736,8 @@ function checkOverdueModal(){
       if (btn) btn.classList.add("on");
     });
   }
+
+  return true;
 }
 
 /* =========================
@@ -809,58 +753,7 @@ function shuffle(arr){
   }
   return a;
 }
-
 function buildLessonCards(){ return dueCardsToday(); }
-
-/* ===== NEW: training lesson by selected cards ===== */
-function startTrainingFromSelected(){
-  const ids = Array.from(selectedCardIds);
-  const cards = ids.map(id=>STATE.cards[id]).filter(Boolean).filter(c=>!STATE.ignoreList?.[c.id]);
-
-  if (cards.length < 4){
-    AudioFX.beep("bad");
-    openModal("تنبيه","يجب تحديد 4 بطاقات على الأقل.",[
-      makeBtn("حسنًا","btn btn--primary", closeModal)
-    ]);
-    return;
-  }
-
-  // ابدأ لعب بدون اعتبار للمستوى
-  const gameQueue = shuffle(["matching","flip","scrambled","typing"]);
-  const dueIds = cards.map(c=>c.id);
-  const thirty = Math.max(1, Math.round(dueIds.length * 0.30));
-  const pick1 = shuffle(dueIds).slice(0, thirty);
-  const remain = dueIds.filter(id=>!pick1.includes(id));
-  const pick2 = shuffle(remain).slice(0, Math.min(thirty, remain.length));
-
-  PLAY = {
-    timer:null, sec:0,
-    goldDelta:0, xpDelta:0, ratingDelta:0,
-    usedHelpInGame:false,
-    cards,
-    gameQueue,
-    playedGames:[],
-    inHint:false,
-    scrambledIds: pick1,
-    typingIds: pick2,
-    hintIndex:0,
-    completedHintAll:false,
-    helpLogs:{matching:[], flip:[], scrambled:[], typing:[]},
-    currentGame:null,
-    trainingMode:true
-  };
-
-  showView("game");
-  qs("#btnNextGame").style.display="";
-  qs("#btnGoHint").style.display="";
-  qs("#btnUseSkip").style.display="";
-  qs("#btnUseHelp").style.display="";
-  qs("#btnHelpLog").style.display="";
-
-  updateHUD();
-  startTimer();
-  launchNextGame();
-}
 
 function startLesson(){
   const cards = buildLessonCards();
@@ -892,16 +785,12 @@ function startLesson(){
     hintIndex:0,
     completedHintAll:false,
     helpLogs:{matching:[], flip:[], scrambled:[], typing:[]},
-    currentGame:null,
-    trainingMode:false
+    currentGame:null
   };
 
   showView("game");
   qs("#btnNextGame").style.display="";
   qs("#btnGoHint").style.display="";
-  qs("#btnUseSkip").style.display="";
-  qs("#btnUseHelp").style.display="";
-  qs("#btnHelpLog").style.display="";
 
   updateHUD();
   startTimer();
@@ -968,6 +857,7 @@ function consumeHelpOrAskBuy(){
 }
 
 function launchNextGame(){
+  if (!PLAY) return;
   PLAY.usedHelpInGame=false;
   const next = PLAY.gameQueue.find(g=>!PLAY.playedGames.includes(g));
   if (!next){
@@ -1015,7 +905,7 @@ function renderGame(gameKey){
       makeBtn("نعم","btn btn--primary", async ()=>{
         closeModal();
         STATE.inventory.skip -= 1;
-        await saveUserState(USER.uid, STATE);
+        await saveBase(USER.uid, pickBase(STATE));
         applyPerfectGameRewards();
         PLAY.playedGames.push(gameKey);
         afterGameFinished(gameKey);
@@ -1029,7 +919,7 @@ function renderGame(gameKey){
 
     STATE.inventory.help -= 1;
     PLAY.usedHelpInGame = true;
-    await saveUserState(USER.uid, STATE);
+    await saveBase(USER.uid, pickBase(STATE));
 
     if (gameKey==="matching") matchingHelp();
     if (gameKey==="flip") flipHelp();
@@ -1210,6 +1100,7 @@ function gameFlip(){
     goldRaw:0
   };
 
+  // show 5s
   tiles.forEach(t=>{
     const el=document.createElement("div");
     el.className="tile";
@@ -1632,29 +1523,40 @@ function typingHelp(){
   ]);
 }
 
-/* -------- After game finished -------- */
+/* -------- After game finished (fixed next button) -------- */
 function afterGameFinished(gameKey){
   const done4 = ["matching","flip","scrambled","typing"].every(g=>PLAY.playedGames.includes(g));
   if (done4) qs("#btnNextGame").style.display="none";
 
-  openModal("تم إنهاء اللعبة", `
-    <div class="modalRow">
-      <div class="muted">اللعبة: <b>${escapeHTML(gameTitle(gameKey))}</b></div>
-      <div class="muted" style="margin-top:8px">يمكنك اختيار اللعبة التالية أو الانتقال لتقييم البطاقات.</div>
-    </div>
-  `, [
-    makeBtn(`<span class="material-icons">sports_esports</span> اللعبة التالية`, "btn btn--primary", ()=>{
-      closeModal();
-      if (!done4) launchNextGame();
-    }),
+  const buttons = [];
+
+  if (!done4){
+    buttons.push(
+      makeBtn(`<span class="material-icons">sports_esports</span> اللعبة التالية`, "btn btn--primary", ()=>{
+        closeModal();
+        launchNextGame();
+      })
+    );
+  }
+
+  buttons.push(
     makeBtn(`<span class="material-icons">task_alt</span> تقييم البطاقات`, "btn btn--primary", ()=>{
       closeModal();
       goToHint();
     })
-  ]);
+  );
+
+  openModal("تم إنهاء اللعبة", `
+    <div class="modalRow">
+      <div class="muted">اللعبة: <b>${escapeHTML(gameTitle(gameKey))}</b></div>
+      <div class="muted" style="margin-top:8px">
+        ${done4 ? "انتهت الألعاب الأربع. انتقل لتقييم البطاقات." : "يمكنك اختيار اللعبة التالية أو الانتقال لتقييم البطاقات."}
+      </div>
+    </div>
+  `, buttons);
 }
 
-/* -------- Hint (attendance) -------- */
+/* -------- Hint -------- */
 function goToHint(){ renderGame("hint"); }
 
 function gameHint(){
@@ -1718,7 +1620,7 @@ function renderHintCard(){
   qs("#rateHard").onclick=()=>rateHint(c.id, "صعب");
 }
 
-function rateHint(cardId, evalText){
+async function rateHint(cardId, evalText){
   const c = STATE.cards[cardId];
   if (!c) return;
 
@@ -1729,6 +1631,8 @@ function rateHint(cardId, evalText){
 
   c.lastHintEval = evalText;
   c.lastHintEvalAt = Date.now();
+
+  await saveCard(USER.uid, c);
 
   PLAY.hintIndex++;
   AudioFX.beep("ok");
@@ -1743,37 +1647,30 @@ async function finishHintAll(){
   applyRatingDelta(PLAY.ratingDelta);
 
   const today = getTodayKey();
+  if (STATE.meta.lastAttendanceDateKey !== today) STATE.meta.streak += 1;
+  STATE.meta.lastAttendanceDateKey = today;
+  STATE.meta.resolvedOverdueDateKey = today;
 
-  // في التدريب: لا نغير الستريك ولا lastAttendance
-  if (!PLAY.trainingMode){
-    if (STATE.meta.lastAttendanceDateKey !== today) STATE.meta.streak += 1;
-    STATE.meta.lastAttendanceDateKey = today;
-    STATE.meta.resolvedOverdueDateKey = today;
+  STATE.meta.lastActivity = `تم تسجيل حضور اليوم. ربح: ذهب ${PLAY.goldDelta}, XP ${PLAY.xpDelta}, تقييم ${PLAY.ratingDelta}.`;
 
-    // عند الحضور: فك تجميد أي بطاقات
-    Object.values(STATE.cards||{}).forEach(c=>{
-      if (c) c.frozenDue = false;
-    });
+  Object.values(STATE.cards||{}).forEach(c=>{
+    if (c) c.frozenDue = false;
+  });
 
-    STATE.meta.lastActivity = `تم تسجيل حضور اليوم. ربح: ذهب ${PLAY.goldDelta}, XP ${PLAY.xpDelta}, تقييم ${PLAY.ratingDelta}.`;
-  } else {
-    STATE.meta.lastActivity = `تم إنهاء تدريب. ربح: ذهب ${PLAY.goldDelta}, XP ${PLAY.xpDelta}, تقييم ${PLAY.ratingDelta}.`;
-  }
-
-  await saveUserState(USER.uid, STATE);
+  await saveBase(USER.uid, pickBase(STATE));
 
   AudioFX.beep("coin");
   AudioFX.beep("rank");
   burstFX(60,20,18);
 
-  openModal(PLAY.trainingMode ? "انتهى التدريب" : "انتهى الدرس", `
+  openModal("انتهى الدرس", `
     <div class="modalRow">
-      <div style="font-weight:900; font-size:18px">${PLAY.trainingMode ? "تم إنهاء التدريب." : "تم تسجيل الحضور."}</div>
+      <div style="font-weight:900; font-size:18px">تم تسجيل الحضور.</div>
       <div class="divider"></div>
       <div class="muted">ذهب: <b>${PLAY.goldDelta}</b></div>
       <div class="muted">XP: <b>${PLAY.xpDelta}</b></div>
       <div class="muted">تقييم: <b>${PLAY.ratingDelta}</b></div>
-      <div class="muted" style="margin-top:10px">يمكنك إعادة اللعب للحصول على إحصائيات جديدة، وآخر تقييم هو المعتمد.</div>
+      <div class="muted" style="margin-top:10px">يمكنك إعادة اللعب اليوم للحصول على إحصائيات جديدة، وآخر تقييم هو المعتمد.</div>
     </div>
   `, [
     makeBtn(`<span class="material-icons">home</span> العودة للرئيسية`, "btn btn--primary", ()=>{
@@ -1798,13 +1695,13 @@ async function handleAbortLesson(){
   if (PLAY && !PLAY.completedHintAll){
     cancelLesson();
     STATE.meta.lastActivity = "تم إلغاء الدرس لعدم إكمال تقييم البطاقات.";
-    await saveUserState(USER.uid, STATE);
+    await saveBase(USER.uid, pickBase(STATE));
   }
   endPlay(true);
 }
 
 /* =========================
-   Store (cloud)
+   Store
    ========================= */
 async function buyExtraCard(){
   if ((STATE.inventory.extraCardsBought||0) >= 2){
@@ -1824,7 +1721,7 @@ async function buyExtraCard(){
   STATE.wallet.gold -= 100;
   STATE.inventory.extraCardsBought = (STATE.inventory.extraCardsBought||0) + 1;
   STATE.meta.lastActivity = "تم شراء بطاقة إضافية لليوم.";
-  await saveUserState(USER.uid, STATE);
+  await saveBase(USER.uid, pickBase(STATE));
   AudioFX.beep("coin");
 }
 async function buySkip(){
@@ -1838,7 +1735,7 @@ async function buySkip(){
   STATE.wallet.gold -= 900;
   STATE.inventory.skip = (STATE.inventory.skip||0) + 1;
   STATE.meta.lastActivity = "تم شراء تخطي.";
-  await saveUserState(USER.uid, STATE);
+  await saveBase(USER.uid, pickBase(STATE));
   AudioFX.beep("coin");
 }
 async function buyHelp(){
@@ -1852,7 +1749,7 @@ async function buyHelp(){
   STATE.wallet.gold -= 150;
   STATE.inventory.help = (STATE.inventory.help||0) + 1;
   STATE.meta.lastActivity = "تم شراء مساعدة.";
-  await saveUserState(USER.uid, STATE);
+  await saveBase(USER.uid, pickBase(STATE));
   AudioFX.beep("coin");
 }
 async function buyFuel(){
@@ -1866,14 +1763,14 @@ async function buyFuel(){
   STATE.wallet.gold -= 250;
   STATE.inventory.fuel = (STATE.inventory.fuel||0) + 1;
   STATE.meta.lastActivity = "تم شراء وقود.";
-  await saveUserState(USER.uid, STATE);
+  await saveBase(USER.uid, pickBase(STATE));
   AudioFX.beep("coin");
 }
 
 /* =========================
-   Start play (daily)
+   Start play (fixed: block on overdue modal)
    ========================= */
-function handleStartPlay(){
+async function handleStartPlay(){
   const cards = buildLessonCards();
   if (cards.length === 0){
     AudioFX.beep("bad");
@@ -1882,7 +1779,10 @@ function handleStartPlay(){
     ]);
     return;
   }
-  checkOverdueModal();
+
+  const shown = await checkOverdueModal();
+  if (shown) return; // user must decide first
+
   startLesson();
 }
 
@@ -1991,52 +1891,6 @@ function wireUI(){
 
   qs("#cardsSearch").addEventListener("input", (e)=>refreshCardsList(e.target.value));
 
-  // NEW: cards top buttons behavior
-  qs("#btnCardsPlay").onclick = async ()=>{
-    AudioFX.beep("tap");
-
-    if (cardsMode === CARDS_MODE.NORMAL){
-      setCardsMode(CARDS_MODE.PLAY_SELECT);
-      return;
-    }
-
-    if (cardsMode === CARDS_MODE.PLAY_SELECT){
-      // start training
-      startTrainingFromSelected();
-      // بعد الدخول للعبة، لا نرجع للوضع الطبيعي إلا عند خروج المستخدم، لذلك نتركه كما هو
-      return;
-    }
-
-    if (cardsMode === CARDS_MODE.IGNORE_SELECT){
-      // apply ignore to selected
-      const ids = Array.from(selectedCardIds);
-      if (!ids.length) return;
-
-      ids.forEach(id=>{
-        STATE.ignoreList[id] = true;
-      });
-      STATE.meta.lastActivity = `تم تجاهل ${ids.length} بطاقة.`;
-      await saveUserState(USER.uid, STATE);
-
-      AudioFX.beep("ok");
-      setCardsMode(CARDS_MODE.NORMAL);
-      refreshHUD();
-      return;
-    }
-  };
-
-  qs("#btnCardsSelect").onclick = ()=>{
-    AudioFX.beep("tap");
-
-    if (cardsMode === CARDS_MODE.NORMAL){
-      setCardsMode(CARDS_MODE.IGNORE_SELECT);
-      return;
-    }
-
-    // cancel in any select mode
-    setCardsMode(CARDS_MODE.NORMAL);
-  };
-
   qs("#btnAbortLesson").onclick=()=>{ AudioFX.beep("tap"); handleAbortLesson(); };
   qs("#btnNextGame").onclick=()=>{ AudioFX.beep("tap"); launchNextGame(); };
   qs("#btnGoHint").onclick=()=>{ AudioFX.beep("tap"); goToHint(); };
@@ -2053,45 +1907,88 @@ function wireUI(){
 
   qs("#userBtn").onclick=()=>{ AudioFX.beep("tap"); openAccountModal(); };
 
+  // prevent rewards if closed before hint completion
   window.addEventListener("beforeunload", ()=>{
     if (PLAY && !PLAY.completedHintAll){
       cancelLesson();
     }
   });
+
+  // date ticker: check once per minute
+  if (DATE_TICKER) clearInterval(DATE_TICKER);
+  DATE_TICKER = setInterval(async ()=>{
+    const nowKey = getTodayKey();
+    if (nowKey !== CURRENT_DAY_KEY){
+      CURRENT_DAY_KEY = nowKey;
+      await persistDayRolloverIfNeeded();
+      refreshHUD();
+      refreshTodayList();
+      refreshCardsList(qs("#cardsSearch")?.value || "");
+    }
+  }, 60000);
+
+  // when user comes back to tab
+  document.addEventListener("visibilitychange", async ()=>{
+    if (document.visibilityState === "visible"){
+      const nowKey = getTodayKey();
+      if (nowKey !== CURRENT_DAY_KEY){
+        CURRENT_DAY_KEY = nowKey;
+        await persistDayRolloverIfNeeded();
+      }
+      refreshHUD();
+      refreshTodayList();
+      refreshCardsList(qs("#cardsSearch")?.value || "");
+      await checkOverdueModal();
+    }
+  });
 }
 
 /* =========================
-   Cloud sync start
+   Start app
    ========================= */
 async function startApp(user){
   USER = user;
   await ensureUserDoc(user);
 
-  if (UNSUB) UNSUB();
-  UNSUB = watchUserState(user.uid, async (st)=>{
-    STATE = st;
+  // load full (base + cards + groups + ignore)
+  STATE = await loadFullState(user.uid);
 
-    STATE.profile = STATE.profile || {};
-    STATE.profile.displayName = STATE.profile.displayName || user.displayName || null;
-    STATE.profile.email = STATE.profile.email || user.email || null;
+  // ensure profile
+  STATE.profile = STATE.profile || {};
+  STATE.profile.displayName = STATE.profile.displayName || user.displayName || null;
+  STATE.profile.email = STATE.profile.email || user.email || null;
 
-    advanceCardsUpToToday();
-    getOrCreateTodayGroup();
+  // ensure today group
+  getOrCreateTodayGroupLocal();
 
-    await saveUserState(USER.uid, STATE);
+  // apply day rollover once at start (and persist if needed)
+  await persistDayRolloverIfNeeded();
+
+  // watch base only (no write-backs here)
+  if (UNSUB_BASE) UNSUB_BASE();
+  UNSUB_BASE = watchBase(user.uid, (base)=>{
+    if (!STATE) return;
+    // merge base safely
+    STATE.meta = base.meta || STATE.meta;
+    STATE.wallet = base.wallet || STATE.wallet;
+    STATE.rank = base.rank || STATE.rank;
+    STATE.inventory = base.inventory || STATE.inventory;
+    STATE.profile = base.profile || STATE.profile;
 
     refreshHUD();
-    refreshTodayList();
-    refreshCardsList(qs("#cardsSearch")?.value || "");
-
-    checkOverdueModal();
   });
 
   wireUI();
   showView("home");
+
+  refreshHUD();
+  refreshTodayList();
+  refreshCardsList("");
+
+  await checkOverdueModal();
 }
 
 /* =========================
    Init
    ========================= */
-guardApp(startApp); 
+guardApp(startApp);
