@@ -124,6 +124,7 @@ a{color:inherit}
   background: linear-gradient(135deg, rgba(124,58,237,.35), rgba(6,182,212,.20));
   border-color: rgba(124,58,237,.55);
 }
+
 @media (max-width: 720px){
   .nav{
     position: fixed;
@@ -215,7 +216,6 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
 }
 .btn--ghost{background: transparent;}
 .btn--small{padding:10px 12px; border-radius:12px; font-weight:800;}
-.btn:disabled{opacity:.55; cursor:not-allowed; transform:none !important;}
 .link{color: var(--p2); text-decoration:none; font-weight:900;}
 .link:hover{text-decoration:underline;}
 
@@ -373,7 +373,6 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
   outline:none;
 }
 
-/* Cards */
 .cardsList{
   margin-top:14px;
   display:grid;
@@ -381,20 +380,28 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
   gap:12px;
 }
 @media (max-width: 980px){.cardsList{grid-template-columns:1fr;}}
-
 .cardTile{
-  position:relative;
   padding:14px;
   border-radius: 16px;
   background: rgba(255,255,255,.05);
   border:1px solid rgba(255,255,255,.08);
   cursor:pointer;
-  transition: transform .15s ease, background .2s ease, border-color .2s ease;
+  transition: transform .15s ease, background .2s ease;
   min-width: 0;
 }
 .cardTile:hover{transform: translateY(-1px); background: rgba(255,255,255,.07);}
-.cardTile__row{display:flex;justify-content:space-between;gap:10px;flex-wrap: wrap;align-items:flex-start;}
+.cardTile__row{display:flex;justify-content:space-between;gap:10px;flex-wrap: wrap;}
 .cardTile__front{font-weight:900; overflow-wrap:anywhere;}
+.cardTile__back{color:var(--muted); font-weight:800; overflow-wrap:anywhere;}
+.cardTile__hint{
+  margin-top:10px;
+  padding-top:10px;
+  border-top:1px solid rgba(255,255,255,.08);
+  color: var(--txt);
+  display:none;
+  overflow-wrap:anywhere;
+}
+.cardTile.open .cardTile__hint{display:block}
 .badges{display:flex; gap:8px; flex-wrap:wrap; margin-top:10px}
 .badge{
   padding:6px 10px;
@@ -405,29 +412,6 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
   font-weight:900;
   font-size:12px;
 }
-
-/* selection state */
-.cardTile.selectable{
-  border-color: rgba(6,182,212,.22);
-}
-.cardTile.selected{
-  border-color: rgba(34,197,94,.55);
-  box-shadow: 0 0 0 4px rgba(34,197,94,.12);
-}
-.cardTile .selMark{
-  position:absolute;
-  top:10px;
-  left:10px;
-  width:28px;
-  height:28px;
-  border-radius:12px;
-  display:none;
-  place-items:center;
-  background: rgba(34,197,94,.18);
-  border:1px solid rgba(34,197,94,.45);
-}
-.cardTile.selected .selMark{display:grid;}
-.selMark .material-icons{font-size:18px}
 
 /* Game */
 .gamePanel{position:relative}
@@ -615,4 +599,12 @@ h2{font-size: clamp(18px, 3.8vw, 22px);}
 @keyframes pop{
   0%{transform: translate(0,0) scale(.7); opacity:1}
   100%{transform: translate(var(--dx), var(--dy)) scale(1.2); opacity:0}
+}
+
+/* ✅ Hide NAV during game */
+body.inGame #mainNav{
+  display:none !important;
+}
+body.inGame .views{
+  padding-bottom: calc(24px + var(--safe-bottom));
 }
