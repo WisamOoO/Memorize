@@ -18,21 +18,49 @@
         <div class="brandLogo">MG</div>
         <div>
           <div class="brandName">Memorize Game</div>
-          <div class="muted">جاري التحقق من الحساب…</div>
+          <div class="muted" id="statusLine">جاري التحقق من الحساب…</div>
         </div>
       </div>
+
       <div class="divider"></div>
-      <div class="muted">إذا لم يتم تحويلك، اضغط هنا:</div>
-      <div style="margin-top:12px">
+
+      <div class="muted" id="slowNote" style="display:none">
+        إذا طال الانتظار: غالبًا يوجد مشكلة اتصال أو منع من المتصفح.
+        جرّب تحديث الصفحة أو تسجيل الدخول من جديد.
+      </div>
+
+      <div style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;">
         <a class="btn btn--primary" href="./login.html" style="text-decoration:none; display:inline-flex;">
           <span class="material-icons">login</span> تسجيل الدخول
         </a>
+        <button class="btn" id="btnReload" type="button">
+          <span class="material-icons">refresh</span> تحديث
+        </button>
       </div>
     </div>
   </div>
 
   <script type="module">
     import { guardIndex } from "./auth-guard.js";
+
+    const statusLine = document.querySelector("#statusLine");
+    const slowNote = document.querySelector("#slowNote");
+
+    document.querySelector("#btnReload").onclick = ()=>location.reload();
+
+    // إذا صار خطأ JS صريح، أظهره بدل الوقوف الصامت
+    window.addEventListener("error", (e)=>{
+      statusLine.textContent = "حدث خطأ أثناء التحقق. افتح Console لمعرفة السبب.";
+      slowNote.style.display = "";
+    });
+    window.addEventListener("unhandledrejection", ()=>{
+      statusLine.textContent = "فشل التحقق (Promise). جرّب إعادة تحميل الصفحة.";
+      slowNote.style.display = "";
+    });
+
+    // إذا لم يتم تحويلك خلال ثواني، أظهر ملاحظة
+    setTimeout(()=>{ slowNote.style.display=""; }, 4500);
+
     guardIndex();
   </script>
 </body>
